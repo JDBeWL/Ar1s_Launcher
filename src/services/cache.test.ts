@@ -126,6 +126,35 @@ describe('MemoryCache', () => {
     cache.set('a', 1);
     expect(cache.cleanup()).toBe(0);
   });
+
+  it('超过 maxSize 时淘汰最久未使用的一条', () => {
+    // maxSize 是 200，塞满后再加一条会触发淘汰
+    for (let i = 0; i < 200; i += 1) {
+      cache.set(`k${i}`, i);
+    }
+    expect(cache.size).toBe(200);
+
+    expect(cache.get('k0')).toBe(0);
+
+    cache.set('newest', 'x');
+
+    expect(cache.get('k0')).toBe(0);
+    expect(cache.get('k1')).toBe(CACHE_MISS);
+    expect(cache.get('newest')).toBe('x');
+    expect(cache.size).toBe(200);
+  });
+
+  it('覆盖已有 key 也会把它当成最近使用', () => {
+    for (let i = 0; i < 200; i += 1) {
+      cache.set(`k${i}`, i);
+    }
+
+    cache.set('k0', 'updated');
+    cache.set('newest', 'x');
+
+    expect(cache.get('k0')).toBe('updated');
+    expect(cache.get('k1')).toBe(CACHE_MISS);
+  });
 });
 
 describe('withCache', () => {

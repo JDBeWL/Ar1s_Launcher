@@ -498,9 +498,8 @@ fn get_java_installation_dirs() -> Vec<PathBuf> {
 
 /// 枚举有盘的盘符
 ///
-/// 不能对 A..Z 逐个 `exists()`：插着空光驱、或有已断开的网络映射盘（SMB 超时）时，
-/// 单次探测可能卡数秒到十几秒。`GetLogicalDrives` 一次系统调用就拿到全部盘符，
-/// 再用 `GetDriveTypeW` 跳过不存在的、以及网络盘（Java 不会装在映射盘上，且探测它最慢）
+/// 不能对 A..Z 逐个 `exists()`：空光驱或已断开的网络映射盘会让单次探测卡十几秒。
+/// `GetLogicalDrives` 一次调用拿到全部盘符，再用 `GetDriveTypeW` 跳过不存在的和网络盘
 #[cfg(target_os = "windows")]
 fn get_windows_drives() -> Vec<char> {
     use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
@@ -583,9 +582,7 @@ fn find_java_in_directory(dir: &Path) -> Vec<String> {
                         paths.extend(find_java_in_subdirectory(&entry.path()));
                     }
                 } else if is_java_vendor_name(&dir_name) {
-                    // 只有已知发行商的目录才值得再下钻一层。
-                    // 以前是无条件递归，Program Files 下每个无关目录都要 read_dir 一次，
-                    // 乘上盘符数就是几百次无用 IO
+                    // 只有已知发行商的目录才值得再下钻一层：无条件递归会让 Program Files 下每个目录都 read_dir 一次
                     paths.extend(find_java_in_subdirectory(&entry.path()));
                 }
             }
@@ -1027,8 +1024,7 @@ mod tests {
     };
     use std::fs;
 
-    /// 白名单只决定「要不要再往下钻一层」，漏掉发行商就会少找到一份 Java；
-    /// 这里把常见安装布局里的目录名逐一钉住
+    /// 白名单只决定「要不要再往下钻一层」，漏掉发行商就会少找到一份 Java
     #[test]
     fn test_java_vendor_name_covers_common_install_layouts() {
         for name in [

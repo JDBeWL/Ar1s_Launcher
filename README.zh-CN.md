@@ -4,7 +4,7 @@
 
 一个基于Tauri框架构建的现代化Minecraft启动器，使用Vuetify提供Material Design 3风格的用户界面。
 
-![Version](https://img.shields.io/badge/version-0.8.6-blue)
+![Version](https://img.shields.io/badge/version-0.8.7-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2.12-orange)
 ![Vue](https://img.shields.io/badge/Vue-3.5-green)
 ![Rust](https://img.shields.io/badge/Rust-1.95+-red)

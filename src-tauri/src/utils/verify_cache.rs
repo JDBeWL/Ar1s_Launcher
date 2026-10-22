@@ -1,12 +1,10 @@
 //! 文件校验指纹缓存
 //!
 //! `verify_file` 要把整个文件读一遍算 sha1，一个完整安装光校验就是 1.5 GB 的读盘。
-//! 但文件内容变没变，用「长度 + 修改时间」就足以判定：指纹没动过，上次的校验结论
-//! 依然成立，第二次安装同一版本基本不再读盘。
+//! 文件内容变没变，用「长度 + 修改时间」就足以判定：指纹没动过，上次的校验结论依然成立。
 //!
-//! 进程内是 HashMap，落盘到游戏目录的 `.ar1s/verify_cache.json`，下次启动仍然有效。
-//! 条目只增不删（覆盖同一路径除外），到上限整体丢弃重建——维护 LRU 的代价比偶尔
-//! 全量重算一遍还高。
+//! 进程内是 HashMap，落盘到游戏目录的 `.ar1s/verify_cache.json`；条目只增不删，
+//! 到上限整体丢弃重建——维护 LRU 的代价比偶尔全量重算一遍还高
 
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
@@ -29,8 +27,7 @@ struct Entry {
     hash: Option<String>,
     /// 上次真正算出来的内容哈希
     ///
-    /// 有了它，同一个文件换一个期望哈希来校验时也能直接比对结论，不必再读一遍。
-    /// 升级后新增字段，旧缓存反序列化为 None，按「不知道」处理即可
+    /// 同一个文件换一个期望哈希来校验时也能直接比对结论；升级后新增的字段，旧缓存读成 None 按「不知道」处理
     #[serde(default)]
     actual: Option<String>,
 }
@@ -84,8 +81,7 @@ pub fn init(game_dir: &Path) {
 
 /// 指纹与期望哈希都和上次校验通过时一致，就不必再读文件
 ///
-/// 比对时优先看上次真正算出的内容哈希：同一个文件这次换个期望值来问，
-/// 只要内容没变，结论照样成立，不必重算
+/// 优先看上次真正算出的内容哈希：内容没变，换个期望值来问结论照样成立
 pub fn matches(path: &Path, meta: &std::fs::Metadata, expected_hash: Option<&str>) -> bool {
     let expected = expected_hash.map(str::to_ascii_lowercase);
     let cache = read_lock();
@@ -105,8 +101,7 @@ pub fn matches(path: &Path, meta: &std::fs::Metadata, expected_hash: Option<&str
 
 /// 取「这个路径上次校验通过时用的哈希」，指纹必须和当前文件一致
 ///
-/// 「校验后台化」靠它判断该不该重算：文件在两次启动之间没被动过，就直接沿用
-/// 上次的结论，连读盘都省了。指纹对不上则返回 None，调用方老老实实重算
+/// 文件在两次启动之间没被动过就直接沿用结论，连读盘都省；指纹对不上返回 None，调用方重算
 pub fn known_hash(path: &Path, meta: &std::fs::Metadata) -> Option<String> {
     let cached = read_lock().entries.get(path).cloned()?;
     (cached.len == meta.len() && cached.modified == modified_nanos(meta))
@@ -134,7 +129,6 @@ pub fn remember(
 
     let hash = match expected_hash {
         Some(hash) => Some(hash.to_ascii_lowercase()),
-        // 只校验大小的调用不要把之前记下的哈希抹掉，否则下次带哈希的校验又要重算
         None => previous.and_then(|entry| entry.hash.clone()),
     };
 
@@ -162,9 +156,7 @@ pub fn remember(
 
 /// 把内存里的指纹写回磁盘；没有变化或没绑定目录时直接返回
 ///
-/// 序列化在读锁下进行：只需要 `&`，并发读不受影响，且不必先把整表克隆一份出来。
-/// 以前是在写锁里 `clone()` 整表、再转成 `HashMap<String, Entry>`、再序列化，
-/// 20k 条的瞬时内存约为缓存本身的 3 倍，这段时间所有校验线程都被挡在锁外
+/// 序列化在读锁下进行：只需要 `&`，并发读不受影响，也不必先把整表克隆一份挡住在场的校验线程
 pub fn flush() {
     let path = {
         let mut cache = write_lock();
@@ -204,8 +196,7 @@ pub fn flush() {
 
 /// 序列化用的借用视图：直接引用内存里的表，不复制任何 Entry
 ///
-/// JSON 的对象键必须是字符串，而内存里用 `PathBuf` 做键；
-/// 这里转成 `&str` 借用传出，省掉「整表 clone + 每键 to_string」这两份多余分配
+/// JSON 的对象键必须是字符串，内存里用 `PathBuf` 做键；这里转成 `&str` 借用传出
 struct CacheFileRef<'a> {
     files: FilesRef<'a>,
 }
@@ -252,8 +243,7 @@ fn load(path: &Path) -> HashMap<PathBuf, Entry> {
 }
 
 /// 先写临时文件再 rename，避免中途退出留下半截 JSON
-///
-/// 生产路径走 `flush` 的借用序列化；这里保留一份「从表直接写盘」的入口给测试用
+/// 生产路径走 `flush` 的借用序列化，这份「从表直接写盘」的入口给测试用
 #[cfg(test)]
 fn save_to(path: &Path, entries: &HashMap<PathBuf, Entry>) -> std::io::Result<()> {
     let text = serde_json::to_string(&CacheFileRef {
@@ -356,7 +346,6 @@ mod tests {
         let path = dir.path().join("known.bin");
         std::fs::write(&path, b"hello").unwrap();
 
-        // 没记过就是 None
         assert_eq!(known_hash(&path, &std::fs::metadata(&path).unwrap()), None);
 
         let meta = std::fs::metadata(&path).unwrap();
@@ -383,8 +372,7 @@ mod tests {
         assert_eq!(known_hash(&path, &std::fs::metadata(&path).unwrap()), None);
     }
 
-    /// flush 现在改用借用视图直接序列化，产出的 JSON 结构必须和原来完全一致，
-    /// 否则升级后老缓存会读不回来
+    /// flush 用借用视图序列化，产出的 JSON 结构必须和原来一致，否则升级后老缓存读不回来
     #[test]
     fn test_lazy_serialization_matches_the_saved_format() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -409,7 +397,6 @@ mod tests {
             1024
         );
 
-        // 落盘再读回来，内容要和内存里一致
         save_to(&path, &entries).unwrap();
         assert_eq!(load(&path), entries);
     }

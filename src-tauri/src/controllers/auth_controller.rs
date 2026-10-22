@@ -45,8 +45,9 @@ pub fn get_saved_username() -> Result<Option<String>, LauncherError> {
 }
 
 #[tauri::command]
-pub fn set_saved_username(username: String) -> Result<(), LauncherError> {
-    crate::services::config::set_saved_username(username)
+pub async fn set_saved_username(username: String) -> Result<(), LauncherError> {
+    crate::controllers::run_blocking(move || crate::services::config::set_saved_username(username))
+        .await
 }
 
 #[tauri::command]
@@ -55,8 +56,8 @@ pub fn get_saved_uuid() -> Result<Option<String>, LauncherError> {
 }
 
 #[tauri::command]
-pub fn set_saved_uuid(uuid: String) -> Result<(), LauncherError> {
-    crate::services::config::set_saved_uuid(uuid)
+pub async fn set_saved_uuid(uuid: String) -> Result<(), LauncherError> {
+    crate::controllers::run_blocking(move || crate::services::config::set_saved_uuid(uuid)).await
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -389,12 +390,15 @@ pub async fn complete_microsoft_auth_code_login() -> Result<MicrosoftLoginResult
 }
 
 #[tauri::command]
-pub fn set_auth_type(auth_type: String) -> Result<(), LauncherError> {
-    update_config(|config| {
-        config.auth_type = match auth_type.as_str() {
-            "microsoft" => AuthType::Microsoft,
-            _ => AuthType::Offline,
-        };
-        Ok(())
+pub async fn set_auth_type(auth_type: String) -> Result<(), LauncherError> {
+    crate::controllers::run_blocking(move || {
+        update_config(|config| {
+            config.auth_type = match auth_type.as_str() {
+                "microsoft" => AuthType::Microsoft,
+                _ => AuthType::Offline,
+            };
+            Ok(())
+        })
     })
+    .await
 }

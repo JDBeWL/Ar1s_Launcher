@@ -204,15 +204,13 @@ pub fn list_shader_packs(instance_name: &str) -> Result<ShaderPackList, Launcher
         }
     }
 
-    packs.sort_by(|a, b| {
-        b.selected
-            .cmp(&a.selected)
-            .then_with(|| b.valid.cmp(&a.valid))
-            .then_with(|| {
-                a.display_name
-                    .to_lowercase()
-                    .cmp(&b.display_name.to_lowercase())
-            })
+    // 键只算一次：比较器里现算 to_lowercase 每次比较都要分配两个 String
+    packs.sort_by_cached_key(|pack| {
+        (
+            std::cmp::Reverse(pack.selected),
+            std::cmp::Reverse(pack.valid),
+            pack.display_name.to_lowercase(),
+        )
     });
 
     Ok(ShaderPackList {
@@ -398,7 +396,15 @@ pub async fn import_shader_packs(
             if !dir_has_shaders(&source_path) {
                 Err(LauncherError::Custom("不是光影包目录".to_string()))
             } else {
-                file_utils::copy_dir_all(&source_path, &target).map_err(LauncherError::Io)
+                // 递归复制整个光影包目录，文件多时会长时间占住线程
+                let source_owned = source_path.clone();
+                let target_owned = target.clone();
+                tokio::task::spawn_blocking(move || {
+                    file_utils::copy_dir_all(&source_owned, &target_owned)
+                        .map_err(LauncherError::Io)
+                })
+                .await
+                .map_err(|e| LauncherError::Custom(format!("导入光影包失败: {}", e)))?
             }
         } else if source_path.is_file() {
             if !name.to_ascii_lowercase().ends_with(".zip") || !zip_has_shaders(&source_path) {
@@ -647,7 +653,7 @@ impl PropertiesFile {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        // 先写临时文件再替换：中途失败不会留下半截配置
+        // 先写临时文件再走 .bak 回滚替换：中途失败不会留下半截配置
         let file_name = self
             .path
             .file_name()
@@ -655,10 +661,7 @@ impl PropertiesFile {
             .unwrap_or_else(|| "properties".to_string());
         let temp = self.path.with_file_name(format!("{}.ar1s-tmp", file_name));
         fs::write(&temp, bytes)?;
-        if self.path.exists() {
-            fs::remove_file(&self.path)?;
-        }
-        fs::rename(&temp, &self.path)?;
+        crate::utils::file_utils::replace_file_atomically(&temp, &self.path)?;
         Ok(())
     }
 }

@@ -480,7 +480,13 @@ import { useNotificationStore } from '../stores/notificationStore';
 import { useSettingsStore } from '../stores/settings';
 import { modpackApi, instanceApi, versionApi } from '../services';
 import { logError } from '../utils/logger';
-import { compareVersionDesc, getErrorMessage, getErrorCode } from '../utils/format';
+import {
+  compareVersionDesc,
+  formatBytesPerSecond,
+  formatBytesProgress,
+  getErrorMessage,
+  getErrorCode,
+} from '../utils/format';
 import type {
   DownloadProgress,
   InstallProgressPayload,
@@ -897,18 +903,11 @@ function closeInstallPanel() {
 }
 
 function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / 1024 ** index;
-  const digits = index === 0 ? 0 : index >= 2 ? 2 : 1;
-  return `${value.toFixed(digits)} ${units[index]}`;
+  return formatBytesProgress(bytes);
 }
 
 function formatSpeed(bytesPerSecond: number): string {
-  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '0 B/s';
-  return `${formatBytes(bytesPerSecond)}/s`;
+  return formatBytesPerSecond(bytesPerSecond);
 }
 
 function filePercent(file: ModpackActiveFile): number {

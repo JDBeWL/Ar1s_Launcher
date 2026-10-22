@@ -203,8 +203,7 @@ pub async fn download_all_files(
     let state_saver_handle =
         spawn_state_saver(download_state.clone(), state_file.clone(), state.clone());
 
-    // 大文件单独限流：几个几百 MB 的 client.jar / 整合包会长期占住槽位，
-    // 后面成百上千个小资源文件只能干等。分成两个池子，小文件永远有槽可用
+    // 大文件单独限流：几个几百 MB 的 jar 会长期占住槽位，小文件只能干等；分成两个池子
     let large_slots = (threads / 4).max(1).min(threads);
     let small_slots = threads.saturating_sub(large_slots).max(1);
     let large_semaphore = Arc::new(tokio::sync::Semaphore::new(large_slots));
@@ -255,10 +254,25 @@ pub async fn download_all_files(
     // 取消监听必须无条件执行，否则每失败一次就多留一个 cancel-download 监听
     window.unlisten(listener_id);
 
-    {
+    // 序列化在锁内完成，落盘放到锁外 + 阻塞线程：`fs::write` 可能卡在磁盘上，
+    // 攥着 tokio 锁写文件会把所有等着 mark_completed 的下载任务一起拖住
+    let pending_json = {
         let mut state = download_state.lock().await;
-        if state.dirty
-            && let Err(e) = state.save_to_file(&state_file)
+        if state.dirty {
+            let json = state.to_json().ok();
+            if json.is_some() {
+                state.mark_saved();
+            }
+            json
+        } else {
+            None
+        }
+    };
+    if let Some(json) = pending_json {
+        // 后面「全部成功则删掉状态文件」还要用，这里给闭包一份自己的
+        let write_target = state_file.clone();
+        if let Err(e) =
+            tokio::task::spawn_blocking(move || std::fs::write(&write_target, json)).await
         {
             warn!("Failed to write final state file: {}", e);
         }
@@ -331,16 +345,10 @@ fn order_jobs_for_dispatch(jobs: &mut [DownloadJob]) {
     jobs.sort_by_key(|job| std::cmp::Reverse(job.size));
 }
 
-/// 预校验：把已在盘上的文件先核一遍，通过的直接从待下载列表里拿掉
+/// 预校验：把已在盘上的文件先核一遍，通过的从待下载列表里拿掉
 ///
-/// 以前这一步混在 `download_file` 里，等于占着一个下载槽位做纯读盘。几百个资源文件
-/// 里如果有大半已经存在，槽位全被哈希算占满，真正的网络下载反而起不来。
-///
-/// 现在读盘和下载彻底分开：这里用阻塞线程池并行核，核完再开始下载。
-/// 校验结果按「长度 + 修改时间」进指纹缓存，第二次基本不读盘。
-///
-/// 核不过的文件不会被删，仍留在列表里交给 `download_file` 重新校验并重下；
-/// 那种情况会多算一遍哈希，但损坏文件本来就是少数，不值得为它把接口搞复杂。
+/// 不占下载槽位——几百个资源文件里若有大半已存在，混在下载里等于用槽位做纯读盘。
+/// 核不过的留在列表里交给 `download_file` 重下，那种情况会多算一遍哈希，但损坏文件本来就是少数
 async fn preverify_existing(
     jobs: &[DownloadJob],
     state: &Arc<AtomicBool>,
@@ -457,13 +465,26 @@ fn spawn_state_saver(
                 break;
             }
 
-            let mut state = download_state.lock().await;
-            if state.dirty {
-                if let Err(e) = state.save_to_file(&state_file) {
-                    warn!("Failed to save download state: {}", e);
+            // 同上：锁内只序列化，落盘在锁外
+            let pending_json = {
+                let mut state = download_state.lock().await;
+                if state.dirty {
+                    let json = state.to_json().ok();
+                    if json.is_some() {
+                        state.mark_saved();
+                    }
+                    json
                 } else {
-                    debug!("Download state saved to {}", state_file.display());
+                    None
                 }
+            };
+
+            let Some(json) = pending_json else { continue };
+            let target = state_file.clone();
+            match tokio::task::spawn_blocking(move || std::fs::write(&target, json)).await {
+                Ok(Ok(())) => debug!("Download state saved to {}", state_file.display()),
+                Ok(Err(e)) => warn!("Failed to save download state: {}", e),
+                Err(e) => warn!("Download state save task failed: {}", e),
             }
         }
     })

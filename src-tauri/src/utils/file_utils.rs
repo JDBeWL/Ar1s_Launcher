@@ -164,8 +164,7 @@ pub fn sha1_file(path: &std::path::Path) -> Result<String, LauncherError> {
 
 /// 多文件并行算 sha1，按 CPU 核数分片
 ///
-/// 逐个串行算的时候只有单核在跑，导出 400 个模组完全感知得到；
-/// 这里按核数切块，每块内部仍然串行，避免几百个线程抢 IO
+/// 逐个串行算只有单核在跑；按核数切块，每块内部仍然串行，避免几百个线程抢 IO
 pub fn sha1_files_parallel(paths: &[PathBuf]) -> Vec<(PathBuf, String)> {
     if paths.is_empty() {
         return Vec::new();
@@ -207,17 +206,14 @@ pub fn sha1_files_parallel(paths: &[PathBuf]) -> Vec<(PathBuf, String)> {
 
 /// 并行算出「文件 -> sha1」的索引，供 Modrinth 的按哈希反查使用
 ///
-/// 模组、资源包、光影包的更新检查是同一套流程：列出本地文件、算哈希、反查归属项目。
-/// 三处以前各自写一遍串行循环，只有单核在跑；这里统一走并行分片。
-/// 返回 (哈希列表, 哈希 -> 文件名)，单个文件算不出来时记警告并跳过。
+/// 模组、资源包、光影包的更新检查共用这一套：返回 (哈希列表, 哈希 -> 文件名)，算不出来的文件记警告并跳过
 pub fn sha1_index_parallel(files: &[(PathBuf, String)]) -> (Vec<String>, HashMap<String, String>) {
     sha1_index_with(files, false)
 }
 
 /// 同上，但命中校验指纹缓存时直接沿用上次算出的内容哈希
 ///
-/// 更新检查是「打开实例页面就看」的操作，每次都把几百 MB 的模组重读一遍太浪费：
-/// 文件的长度与修改时间都没变，内容就一定还是那一份，哈希不必重算。
+/// 更新检查是「打开实例页面就看」的操作：长度与修改时间没变，内容就一定还是那一份，不必重读
 pub fn sha1_index_cached(files: &[(PathBuf, String)]) -> (Vec<String>, HashMap<String, String>) {
     sha1_index_with(files, true)
 }
@@ -281,8 +277,7 @@ fn sha1_index_with(
 
 /// 边写边算：下载时每块数据顺手进哈希，写完不必再把整个文件读一遍
 ///
-/// `Clone` 用于续传前缀缓存：把「算到某个长度」的哈希器状态存下来，
-/// 重试时从那个点接着算，而不是把前缀整个重读一遍
+/// `Clone` 用于续传前缀缓存：把「算到某个长度」的哈希器状态存下来，重试时接着算
 #[derive(Clone)]
 pub struct FileHasher {
     hasher: Sha1,
@@ -324,8 +319,7 @@ pub fn verify_sha1(bytes: &[u8], expected: &str) -> bool {
 
 /// 递归拷贝目录
 ///
-/// 用带缓冲的流式拷贝而不是 `fs::copy`：后者在部分平台上不预分配目标长度，
-/// 大文件会反复扩文件；这里顺手把 mtime 也带过去，方便后续按时间戳判断缓存
+/// 带缓冲的流式拷贝并按源长度预分配目标，顺手把 mtime 带过去，供指纹缓存判断
 pub fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), std::io::Error> {
     fs::create_dir_all(&dst)?;
     for entry in fs::read_dir(src)? {
@@ -355,9 +349,55 @@ fn copy_file(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-/// expected_size 为 0 或 expected_hash 为 None 时，对应校验直接跳过
+/// 用 `staged` 覆盖 `target`，尽量不出现「旧文件已删、新文件还没就位」的窗口。
 ///
-/// 命中校验指纹缓存时不再读文件；缓存按「长度 + 修改时间」判定内容是否还是那一份
+/// 直接 remove + rename 在 Windows 上有真实风险：杀软扫描、索引器或用户开着文件都会让第二步失败，
+/// 而旧文件这时已经没了。所以先把旧文件改名成 `.bak`（同卷 rename 是原子的），失败就把 `.bak` 改回去
+pub fn replace_file_atomically(staged: &Path, target: &Path) -> Result<(), LauncherError> {
+    let backup = backup_path_for(target);
+
+    // 上一轮崩溃可能留下同名 .bak，先清掉，否则下面的 rename 会失败
+    if backup.exists() {
+        let _ = fs::remove_file(&backup);
+    }
+
+    let had_old = target.exists();
+    if had_old {
+        fs::rename(target, &backup).map_err(|e| {
+            LauncherError::Custom(format!("无法暂存旧文件 {}: {}", target.display(), e))
+        })?;
+    }
+
+    if let Err(e) = fs::rename(staged, target) {
+        // 新文件没就位，把旧文件还回去，别让调用方看到「文件没了」
+        if had_old {
+            let _ = fs::rename(&backup, target);
+        }
+        return Err(LauncherError::Custom(format!(
+            "无法写入新文件 {}: {}",
+            target.display(),
+            e
+        )));
+    }
+
+    if had_old {
+        let _ = fs::remove_file(&backup);
+    }
+    Ok(())
+}
+
+/// `.bak` 与目标同目录，保证 rename 落在同一个卷上（同卷 rename 才是原子的）
+fn backup_path_for(target: &Path) -> PathBuf {
+    let mut name = target
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".ar1s-bak");
+    target.with_file_name(name)
+}
+
+/// expected_size 为 0 或 expected_hash 为 None 时，对应校验直接跳过
+/// 命中校验指纹缓存时不再读文件，缓存按「长度 + 修改时间」判定内容是否还是那一份
 pub fn verify_file(
     path: &std::path::Path,
     expected_hash: Option<&str>,
@@ -705,7 +745,6 @@ mod tests {
         let hello = "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d";
         assert!(verify_file(&path, Some(hello), 5).unwrap());
 
-        // 内容变了、长度也变了：缓存必须失效
         fs::write(&path, b"hello world").unwrap();
         assert!(!verify_file(&path, Some(hello), 5).unwrap());
         assert!(!verify_file(&path, Some(hello), 11).unwrap());
@@ -729,5 +768,71 @@ mod tests {
         // 缓存里仍留着哈希，这次应当直接命中而不再读文件
         assert!(verify_file(&path, Some(hello), 5).unwrap());
         assert!(!verify_file(&path, Some("0000000000000000000000000000000000000000"), 5).unwrap());
+    }
+
+    #[test]
+    fn test_replace_file_atomically_overwrites_and_cleans_backup() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("mod.jar");
+        let staged = dir.path().join("mod.jar.new");
+        fs::write(&target, b"old").unwrap();
+        fs::write(&staged, b"new").unwrap();
+
+        replace_file_atomically(&staged, &target).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert!(!staged.exists(), "临时文件应已消失");
+        assert!(
+            !dir.path().join("mod.jar.ar1s-bak").exists(),
+            "成功替换后不应留下 .bak"
+        );
+    }
+
+    #[test]
+    fn test_replace_file_atomically_creates_target_when_absent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("pack.zip");
+        let staged = dir.path().join("pack.zip.new");
+        fs::write(&staged, b"content").unwrap();
+
+        replace_file_atomically(&staged, &target).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"content");
+    }
+
+    /// 关键保护：新文件没能就位时必须把旧文件还回去，
+    /// 否则玩家的模组会在更新失败时彻底消失
+    #[test]
+    fn test_replace_file_atomically_restores_old_file_when_new_is_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("mod.jar");
+        fs::write(&target, b"old").unwrap();
+        // 故意给一个不存在的 staged 路径，让第二步 rename 失败
+        let missing_staged = dir.path().join("nope.jar");
+
+        assert!(replace_file_atomically(&missing_staged, &target).is_err());
+
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            b"old",
+            "失败后旧文件必须回到原位"
+        );
+        assert!(!dir.path().join("mod.jar.ar1s-bak").exists());
+    }
+
+    /// 上一轮崩溃留下的 .bak 不能挡住下一次替换
+    #[test]
+    fn test_replace_file_atomically_clears_stale_backup() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("mod.jar");
+        let staged = dir.path().join("mod.jar.new");
+        fs::write(&target, b"old").unwrap();
+        fs::write(dir.path().join("mod.jar.ar1s-bak"), b"stale").unwrap();
+        fs::write(&staged, b"new").unwrap();
+
+        replace_file_atomically(&staged, &target).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert!(!dir.path().join("mod.jar.ar1s-bak").exists());
     }
 }

@@ -1,9 +1,8 @@
 //! 整合包导出
 //!
 //! 把一个实例打包成 Modrinth 格式的 .mrpack：识别得出的模组按 Modrinth 版本写进
-//! `modrinth.index.json` 的 files（安装时走官方 CDN），其余内容（config、资源包、光影、
-//! 存档、识别不出出处的 jar）原样放进 overrides。这样导出的包既能被别的启动器装，
-//! 也能在本启动器里通过「从文件导入」再装回来。
+//! `modrinth.index.json` 的 files（安装时走官方 CDN），其余内容原样放进 overrides。
+//! 导出的包既能被别的启动器装，也能在本启动器里通过「从文件导入」装回来。
 
 use crate::errors::LauncherError;
 use crate::models::modpack::{ModpackExportOptions, ModpackExportResult, ModrinthModpackVersion};
@@ -111,11 +110,7 @@ pub async fn export_modpack(
     let target = validate_target(&options.target_path)?;
 
     // 实例的 MC 版本与加载器来自 instance.json / 版本 JSON，和实例列表用的是同一套推断
-    let info = instance::get_instances()
-        .await?
-        .into_iter()
-        .find(|info| info.name == instance_name)
-        .ok_or_else(|| LauncherError::Custom(format!("实例 '{}' 不存在", instance_name)))?;
+    let info = instance::get_instance_info(&instance_name).await?;
 
     let minecraft = info
         .game_version
@@ -146,9 +141,8 @@ pub async fn export_modpack(
             "实例里装了模组但识别不出加载器，无法导出为整合包".to_string(),
         ));
     }
-    // 顺序不能反过来：反查 Modrinth 需要哈希，回填链接也需要哈希，所以先收集清单、
-    // 再把所有 jar/zip 一次性并行算完。以前「反查」和「回填」各算一遍，同一批模组
-    // 被完整读了两遍磁盘
+    // 顺序不能反过来：反查 Modrinth 与回填链接都需要哈希，所以先收集清单、
+    // 再把所有 jar/zip 一次性并行算完，同一批文件只读一遍磁盘
     let mut seen_paths = HashSet::new();
     let mut plan = Vec::new();
     collect_planned_files(
@@ -252,9 +246,7 @@ pub async fn export_modpack(
 }
 
 /// 计划里所有 jar/zip 的 sha1，按路径索引：`PathBuf -> sha1`
-///
-/// 整条导出链路上只在这里读文件内容。反查 Modrinth 与回填链接共用这一份结果，
-/// 以前两处各算一遍，400 个模组等于凭空多读几百 MB 磁盘。
+/// 整条导出链路只在这里读文件内容，反查 Modrinth 与回填链接共用这份结果
 async fn hash_planned_files(plan: &[PlannedFile]) -> HashMap<PathBuf, String> {
     let candidates: Vec<PathBuf> = plan
         .iter()
@@ -593,7 +585,7 @@ fn write_mrpack(
                 .compression_level(level);
 
             zip.start_file(entry, options)?;
-            // 流式拷贝：以前 fs::read 会把整个文件读进内存，一个 500 MB 的存档能直接顶爆
+            // 流式拷贝，不把整个文件读进内存：一个 500 MB 的存档能直接顶爆
             let mut input = std::io::BufReader::with_capacity(
                 1024 * 1024,
                 File::open(source).map_err(|error| {

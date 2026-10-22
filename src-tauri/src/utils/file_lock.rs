@@ -28,12 +28,9 @@ impl Drop for FileLock {
         {
             // 先解锁，再判断能不能删。
             //
-            // 不能直接 remove_file：共享锁允许多个持有者，第一个释放时删掉文件，
-            // 其余持有者锁住的就成了一个已删除的 inode，之后新来的排他锁会
-            // 在新建的空文件上成功——互斥直接失效，正在跑的游戏会被当成"没人在跑"。
-            //
-            // 解锁后立刻抢一次排他锁：抢得到说明确实没人了，删掉；
-            // 抢不到说明还有别的持有者，原样留着，等最后一个释放时再删
+            // 共享锁允许多个持有者，第一个释放时直接 remove_file 会让其余持有者锁在一个已删除的
+            // inode 上，新来的排他锁就能在新建的空文件上成功——互斥失效，正在跑的游戏被当成"没人在跑"。
+            // 所以解锁后抢一次排他锁：抢得到才删，抢不到原样留着，等最后一个持有者释放
             let _ = self.file.unlock();
 
             if let Ok(file) = std::fs::OpenOptions::new()
@@ -327,12 +324,9 @@ mod tests {
     use super::{acquire, acquire_async, acquire_shared};
     use std::time::Duration;
 
-    /// 多个共享持有者可以共存，且**任何一个释放都不能删掉别人的锁文件**
+    /// 多个共享持有者可以共存，且任何一个释放都不能删掉别人的锁文件
     ///
-    /// 后半句是 Unix 特有的陷阱：锁挂在 inode 上，第一个持有者一 unlink，
-    /// 其余持有者锁着的就变成一个已删除的 inode，之后新来的排他锁会在
-    /// 新建的空文件上成功——正在跑的游戏会被当成"没人在跑"。
-    /// 这条测试在 Linux CI 上跑才有意义，Windows 靠 DELETE_ON_CLOSE 天然成立
+    /// 这条只在 Linux CI 上有意义：Windows 靠 DELETE_ON_CLOSE 天然成立
     #[test]
     fn test_multiple_shared_locks_can_coexist() {
         let dir = tempfile::TempDir::new().unwrap();

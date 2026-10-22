@@ -364,7 +364,9 @@ fn system_text(ctx: &BundleContext<'_>, instance_dir: &Path, content_root: &Path
         "系统: {} / {}，{} 个 CPU 线程",
         std::env::consts::OS,
         std::env::consts::ARCH,
-        num_cpus::get()
+        std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(0)
     );
     let _ = writeln!(
         out,

@@ -5,6 +5,14 @@
 
 use std::path::Path;
 
+/// 已经收紧过权限的路径。
+///
+/// `restrict_impl` 会拉起 `icacls` 子进程，一次几十毫秒，而配置写入是高频操作。
+/// DACL 用 `/inheritance:r` 砍掉继承后，覆写同一路径不会把继承加回来——实测 `MoveFileEx`
+/// 覆盖已存在文件时保留的是被改名文件的显式 ACE，所以「同一路径只收紧一次」不留可读窗口
+#[cfg(windows)]
+static RESTRICTED: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 /// 把文件权限收紧到当前用户（Windows 额外保留 SYSTEM 与管理员）
 pub fn restrict_to_current_user(path: &Path) {
     restrict_impl(path);
@@ -31,6 +39,15 @@ fn restrict_impl(path: &Path) {
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+    // 只做一次，重复拉起子进程纯属浪费。锁中毒时直接重算，不值得为它 panic
+    if RESTRICTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&path.to_path_buf())
+    {
+        return;
+    }
+
     let user = match (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) {
         (Ok(domain), Ok(name)) if !domain.is_empty() && !name.is_empty() => {
             format!("{}\\{}", domain, name)
@@ -54,7 +71,13 @@ fn restrict_impl(path: &Path) {
     }
 
     match command.output() {
-        Ok(output) if output.status.success() => {}
+        Ok(output) if output.status.success() => {
+            // 只有真收紧成功才记下来；失败下回还要再试
+            RESTRICTED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(path.to_path_buf());
+        }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             log::warn!("收紧配置文件权限失败: {}", stderr.trim());

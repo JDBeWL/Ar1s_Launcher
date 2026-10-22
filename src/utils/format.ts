@@ -35,6 +35,26 @@ export function formatFileSize(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+/**
+ * 下载进度里的体积展示：保留两位有效小数并随量级调整精度。[`formatFileSize`] 会把 1500 B
+ * 取整成「1 KB」，而进度条每帧都在变，取整会让数字长时间不动、看着像卡住
+ */
+export function formatBytesProgress(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** index;
+  const digits = index === 0 ? 0 : index >= 2 ? 2 : 1;
+  return `${value.toFixed(digits)} ${units[index]}`;
+}
+
+/** 下载速度：按 KB/s、MB/s 展示，0 或非法值时给 `0 B/s` */
+export function formatBytesPerSecond(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '0 B/s';
+  return `${formatBytesProgress(bytesPerSecond)}/s`;
+}
+
 const LOADER_ICONS: Record<string, { list: string; select: string }> = {
   forge: { list: 'mdi-anvil', select: 'mdi-anvil' },
   fabric: { list: 'mdi-texture-box', select: 'mdi-feather' },

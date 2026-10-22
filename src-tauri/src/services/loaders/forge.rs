@@ -346,11 +346,9 @@ fn forge_installer_sources(mc: &str, v: &str) -> Vec<String> {
 
 /// 流式把 URL 写到目标文件，边写边算 sha1，可选校验 ZIP 头
 ///
-/// 以前用 `resp.bytes()` 把整个 jar 读进内存：Forge installer ~10 MB 还行，
-/// 但库文件走同一条路径、还是并发下载的，几个大 jar 同时进来就是几十 MB 的峰值。
-/// 现在内存占用与文件大小无关。
-///
-/// `validate` 拿到「ZIP 头是否合法 + 实际 sha1」，返回 false 表示这份内容不可用。
+/// `resp.bytes()` 会把整个 jar 读进内存；库文件走同一条路径且并发下载，
+/// 几个大 jar 同时进来就是几十 MB 峰值。流式之后内存占用与文件大小无关。
+/// `validate` 拿到「ZIP 头是否合法 + 实际 sha1」，返回 false 表示这份内容不可用
 pub(crate) async fn download_to_file(
     url: &str,
     client: &Client,

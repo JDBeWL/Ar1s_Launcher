@@ -185,7 +185,9 @@ pub fn optimize_jvm_memory_args(
 ) -> Vec<String> {
     let mut args = Vec::new();
 
-    let cpu_cores = num_cpus::get() as u32;
+    let cpu_cores = std::thread::available_parallelism()
+        .map(|count| count.get() as u32)
+        .unwrap_or(4);
     // GC 线程数：留 1-2 核给游戏主线程和系统
     let gc_threads = if cpu_cores <= 2 {
         1

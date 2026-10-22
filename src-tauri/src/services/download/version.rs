@@ -307,7 +307,14 @@ async fn collect_assets(
     let assets_index_path = assets_base_dir
         .join("indexes")
         .join(format!("{}.json", assets_index_id));
-    fs::create_dir_all(assets_index_path.parent().unwrap())?;
+    // 路径来自用户配置的 game_dir，不能假设一定有父目录
+    let assets_index_dir = assets_index_path.parent().ok_or_else(|| {
+        LauncherError::Custom(format!(
+            "资源索引路径没有父目录: {}",
+            assets_index_path.display()
+        ))
+    })?;
+    fs::create_dir_all(assets_index_dir)?;
 
     if !assets_index_path.exists() {
         let response = client.get(&assets_index_url).send().await?;
@@ -315,8 +322,7 @@ async fn collect_assets(
         fs::write(&assets_index_path, &bytes)?;
     }
 
-    // 索引动辄十几 MB、几千个对象：读盘 + 解析 + 建任务是纯 CPU 活，
-    // 留在 async worker 上会让这段时间的其他命令一起等
+    // 索引动辄十几 MB、几千个对象：读盘 + 解析 + 建任务是纯 CPU 活，留在 async worker 上会拖住其他命令
     let objects_dir = assets_base_dir.join("objects");
     let index_path = assets_index_path.clone();
     let is_mirror_copy = is_mirror;

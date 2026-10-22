@@ -261,7 +261,7 @@ pub enum JavaGate {
     Refuse(String),
 }
 
-/// 当前 Java 不满足判据时的处置：**用户的选择优先于自动匹配**
+/// 当前 Java 不满足判据时的处置：用户的选择优先于自动匹配
 pub fn resolve_gate(
     profile: &java_requirement::InstanceProfile,
     current: (&str, u32),

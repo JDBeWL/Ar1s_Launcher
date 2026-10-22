@@ -1,7 +1,6 @@
 //! Modrinth 整合包（.mrpack）格式
 //!
-//! `modrinth.index.json` 的结构、校验与解压。在线安装、本地导入与导出共用这一份定义，
-//! 免得三处各写一遍字段名后慢慢漂移。
+//! `modrinth.index.json` 的结构、校验与解压；在线安装、本地导入与导出共用这一份定义
 
 use crate::errors::LauncherError;
 use crate::services::loaders::LoaderType;

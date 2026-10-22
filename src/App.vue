@@ -161,15 +161,12 @@ const shortcuts = computed(() => [
 ]);
 
 onMounted(async () => {
-  // 主题放最前面，配置文件读到的是真值，localStorage 只用来抢首屏
-  await loadThemeFromConfig();
+  // 主题和界面语言各自只读一个配置键，彼此没有依赖，串行等于白白多等一轮 IPC。
+  // 主题仍要最先「应用」，但读取可以和语言并行
+  await Promise.all([loadThemeFromConfig(), uiLanguageStore.load()]);
   applyTheme();
 
-  // 界面语言与主题同理：先按缓存/系统语言渲染，再以配置文件为准
-  await uiLanguageStore.load();
-
-  await launcherStore.subscribe();
-  downloadStore.init();
+  await Promise.all([launcherStore.subscribe(), downloadStore.init()]);
 
   window.addEventListener('keydown', handleGlobalShortcut);
   window.addEventListener('theme-palette-changed', handlePaletteChange);

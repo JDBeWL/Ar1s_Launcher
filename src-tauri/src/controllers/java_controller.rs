@@ -39,13 +39,17 @@ pub fn get_custom_java_paths() -> Vec<String> {
 }
 
 #[tauri::command]
-pub fn add_custom_java_path(path: String) -> Result<(), LauncherError> {
-    crate::services::config::add_custom_java_path(&path)
+pub async fn add_custom_java_path(path: String) -> Result<(), LauncherError> {
+    crate::controllers::run_blocking(move || crate::services::config::add_custom_java_path(&path))
+        .await
 }
 
 #[tauri::command]
-pub fn remove_custom_java_path(path: String) -> Result<(), LauncherError> {
-    crate::services::config::remove_custom_java_path(&path)
+pub async fn remove_custom_java_path(path: String) -> Result<(), LauncherError> {
+    crate::controllers::run_blocking(move || {
+        crate::services::config::remove_custom_java_path(&path)
+    })
+    .await
 }
 
 #[tauri::command]

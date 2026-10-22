@@ -127,9 +127,8 @@ pub async fn launch_minecraft(
         java::generate_offline_uuid(&options.username)
     };
 
-    // 用户名、UUID、上次启动时间与「上次选择的版本」都在同一个配置文件里。
-    // 以前分三次 update_config，等于三次整文件读盘 + 三次全量写 + 三次 icacls 派生，
-    // 冷启动白等上百毫秒；这里合成一次读改写
+    // 用户名、UUID、上次启动时间与「上次选择的版本」都在同一个配置文件里，
+    // 合成一次读改写：分三次 update_config 就是三次整文件读盘 + 三次全量写 + 三次 icacls 派生
     let launch_stamp = now_millis();
     update_config(|config| {
         config.username = Some(options.username.clone());

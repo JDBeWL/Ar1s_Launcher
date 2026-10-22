@@ -236,8 +236,7 @@ pub async fn create_instance(
 
     send_progress(30, "复制基础文件...", false);
 
-    // 递归拷贝整个版本目录（可能几百 MB）是纯同步活，留在 async worker 上会把
-    // 这段时间里其他命令一起拖住
+    // 递归拷贝整个版本目录（可能几百 MB）：留在 async worker 上会拖住这段时间里的其他命令
     let copy_result = {
         let source_dir = source_dir.clone();
         let dest_dir = dest_dir.clone();
@@ -367,16 +366,33 @@ pub async fn get_instances() -> Result<Vec<InstanceInfo>, LauncherError> {
     // 关闭隔离时所有实例共用根目录的 mods，计数要按共享目录来
     let isolated = config::is_version_isolated();
 
-    // 顺手清掉已删除实例留下的运行锁，避免锁文件越攒越多
-    prune_stale_run_locks(&game_dir, &versions_dir);
-
-    // 目录遍历加 JSON 解析耗时，放阻塞线程池执行
-    let instances =
-        tokio::task::spawn_blocking(move || get_instances_sync(&versions_dir, isolated))
-            .await
-            .map_err(|e| LauncherError::Custom(format!("获取实例列表失败: {}", e)))??;
+    // 目录遍历 + JSON 解析是同步活；清残留运行锁要逐个探测锁文件、抢不到时退让重试，
+    // 同样不能在 async worker 上等，一并塞进同一个阻塞任务
+    let instances = tokio::task::spawn_blocking(move || {
+        prune_stale_run_locks(&game_dir, &versions_dir);
+        get_instances_sync(&versions_dir, isolated)
+    })
+    .await
+    .map_err(|e| LauncherError::Custom(format!("获取实例列表失败: {}", e)))??;
 
     Ok(instances)
+}
+
+/// 只解析一个实例的元数据，省掉对其余所有版本 JSON 的解析
+pub async fn get_instance_info(instance_name: &str) -> Result<InstanceInfo, LauncherError> {
+    let (game_dir, versions_dir) = get_dirs()?;
+    let isolated = config::is_version_isolated();
+    let wanted = instance_name.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        prune_stale_run_locks(&game_dir, &versions_dir);
+        get_instances_filtered_sync(&versions_dir, isolated, Some(&wanted))
+            .ok()
+            .and_then(|mut list| list.pop())
+            .ok_or_else(|| LauncherError::Custom(format!("实例 '{}' 不存在", wanted)))
+    })
+    .await
+    .map_err(|e| LauncherError::Custom(format!("获取实例信息失败: {}", e)))?
 }
 
 /// Forge/NeoForge 把加载器信息写在 arguments.game 的 `--fml.*` 参数里，
@@ -628,6 +644,16 @@ fn get_instances_sync(
     versions_dir: &Path,
     isolated: bool,
 ) -> Result<Vec<InstanceInfo>, LauncherError> {
+    get_instances_filtered_sync(versions_dir, isolated, None)
+}
+
+/// `only` 只取指定实例时，跳过其余版本目录，不做 JSON 解析
+/// 装模组、装资源包、导出整合包都只需要一个实例的信息，不该每次都把全表重解析一遍
+fn get_instances_filtered_sync(
+    versions_dir: &Path,
+    isolated: bool,
+    only: Option<&str>,
+) -> Result<Vec<InstanceInfo>, LauncherError> {
     let mut instances = Vec::new();
 
     if !versions_dir.exists() {
@@ -647,15 +673,13 @@ fn get_instances_sync(
         .filter(|cfg| cfg.auto_memory_enabled)
         .map(|_| get_system_memory().available_memory_mb as u32);
 
-    // 上次启动时间整表取一次：以前在循环里逐实例调用，每次都 stat 配置文件 + 抢锁，
-    // 20 个实例就是 20 次系统调用，而内容其实是同一份
+    // 上次启动时间整表取一次：逐实例调用会重复 stat 配置文件 + 抢锁，而内容其实是同一份
     let last_played_map = config
         .as_ref()
         .map(|cfg| cfg.instance_last_played.clone())
         .unwrap_or_default();
 
-    // 关闭隔离时所有实例共用根目录的 mods，逐个实例重扫一遍是纯浪费：
-    // 20 个实例 × 500 个模组 = 1 万次完全重复的遍历与 PathBuf 分配，结果还都一样
+    // 关闭隔离时所有实例共用根目录的 mods：20 个实例 × 500 个模组 = 1 万次完全重复的遍历
     let mut mod_count_cache: HashMap<PathBuf, Option<u32>> = HashMap::new();
 
     if let Ok(entries) = fs::read_dir(versions_dir) {
@@ -664,6 +688,10 @@ fn get_instances_sync(
                 && file_type.is_dir()
             {
                 let name = entry.file_name().to_string_lossy().to_string();
+                // 只要一个实例时，别人的目录连 stat 都不必做
+                if only.is_some_and(|wanted| wanted != name) {
+                    continue;
+                }
                 let path = entry.path();
                 let json_path = path.join(format!("{}.json", name));
 
@@ -915,8 +943,7 @@ fn resolve_mod_path(
 
 /// 从 jar 里读模组名和版本。Fabric / Quilt 走 JSON，Forge / NeoForge 走 mods.toml
 ///
-/// 每次读都要打开 jar 并解析中央目录，几百个模组时进一次实例页就是几百次打开。
-/// 元数据只跟文件内容有关，用「长度 + 修改时间」判重就够了：指纹没变直接返回上次结果
+/// 每次读都要打开 jar 解析中央目录；元数据只跟文件内容有关，「长度 + 修改时间」没变就返回上次结果
 fn read_mod_metadata(path: &Path) -> (Option<String>, Option<String>) {
     let meta = match fs::metadata(path) {
         Ok(meta) => meta,
@@ -1305,7 +1332,11 @@ pub async fn delete_instance(instance_name: String) -> Result<(), LauncherError>
             other => other,
         })?;
 
-    fs::remove_dir_all(&instance_dir)
+    // 整个实例目录可能上 GB，删除会长时间占住线程，不能放在 async worker 上
+    let dir_to_delete = instance_dir.clone();
+    tokio::task::spawn_blocking(move || fs::remove_dir_all(&dir_to_delete))
+        .await
+        .map_err(|e| LauncherError::Custom(format!("删除实例失败: {}", e)))?
         .map_err(|e| LauncherError::Custom(format!("删除实例失败: {}", e)))?;
 
     let _ = config::remove_instance_last_played(&instance_name);
@@ -1353,26 +1384,40 @@ pub async fn rename_instance(old_name: String, new_name: String) -> Result<(), L
         .and_then(|c| serde_json::from_str::<Value>(&c).ok())
         .and_then(|json| find_real_minecraft_version(&old_name, &json, &versions_dir));
 
+    // 改名分两步：先在原目录里把 <old>.json / <old>.jar 改成新名字并改写 id，
+    // 全部成功后才改名目录本身。反过来做的话目录已叫 new_name、里面却还是 old_name.json，
+    // 失败时既启动不了也改不回去。这几步不能吞错：静默跳过 id 改写会留下「重命名成功但启动不了」
+    let old_json = old_dir.join(format!("{}.json", old_name));
+    let renamed_json = old_dir.join(format!("{}.json", new_name));
+    let old_jar = old_dir.join(format!("{}.jar", old_name));
+
+    if old_json.exists() {
+        fs::rename(&old_json, &renamed_json)
+            .map_err(|e| LauncherError::Custom(format!("重命名版本 JSON 失败: {}", e)))?;
+    }
+
+    if old_jar.exists()
+        && let Err(e) = fs::rename(&old_jar, old_dir.join(format!("{}.jar", new_name)))
+    {
+        // jar 没改成，就把 JSON 名字改回去，尽量别留下半改状态
+        let _ = fs::rename(&renamed_json, &old_json);
+        return Err(LauncherError::Custom(format!(
+            "重命名客户端 jar 失败: {}",
+            e
+        )));
+    }
+
+    // 只有 JSON 真就位了才改写 id；解析失败直接报错，不再静默跳过
+    if renamed_json.exists() {
+        let content = fs::read_to_string(&renamed_json)?;
+        let mut json: Value = serde_json::from_str(&content)
+            .map_err(|e| LauncherError::Custom(format!("版本 JSON 解析失败: {}", e)))?;
+        json["id"] = Value::String(new_name.clone());
+        fs::write(&renamed_json, serde_json::to_string_pretty(&json)?)?;
+    }
+
     fs::rename(&old_dir, &new_dir)
         .map_err(|e| LauncherError::Custom(format!("重命名目录失败: {}", e)))?;
-
-    let _ = fs::rename(
-        new_dir.join(format!("{}.json", old_name)),
-        new_dir.join(format!("{}.json", new_name)),
-    );
-    let _ = fs::rename(
-        new_dir.join(format!("{}.jar", old_name)),
-        new_dir.join(format!("{}.jar", new_name)),
-    );
-
-    let json_path = new_dir.join(format!("{}.json", new_name));
-    if json_path.exists() {
-        let content = fs::read_to_string(&json_path)?;
-        if let Ok(mut json) = serde_json::from_str::<Value>(&content) {
-            json["id"] = Value::String(new_name.clone());
-            fs::write(&json_path, serde_json::to_string_pretty(&json)?)?;
-        }
-    }
 
     let _ = config::rename_instance_last_played(&old_name, &new_name);
 

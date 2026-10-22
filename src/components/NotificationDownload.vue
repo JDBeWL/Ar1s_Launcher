@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { formatBytesProgress } from '../utils/format';
 
 const { t } = useI18n();
 
@@ -64,14 +65,7 @@ const remainingTime = computed(() => {
 });
 
 const progressText = computed(() => {
-  const formatBytes = (bytes: number) => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-  return `${formatBytes(props.progress)} / ${formatBytes(props.total)}`;
+  return `${formatBytesProgress(props.progress)} / ${formatBytesProgress(props.total)}`;
 });
 
 function hideNotification() {

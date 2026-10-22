@@ -28,7 +28,6 @@ pub async fn extract_natives(
         crate::utils::file_lock::acquire_async(&lock_path, std::time::Duration::from_secs(30))
             .await?;
 
-    // 解压本身是纯同步的读盘 + 解压，挪到阻塞线程池，别占 async worker
     let version_json = version_json.clone();
     let version_dir = version_dir.to_path_buf();
     let libraries_base_dir = libraries_base_dir.to_path_buf();

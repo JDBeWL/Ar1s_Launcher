@@ -215,11 +215,11 @@ impl ShaderPackInstaller {
         let staged_path = staging.join(&staged_name);
         let final_path = context.packs_dir.join(&staged_name);
 
-        fs::remove_file(&old_path)?;
-        if final_path.exists() {
-            fs::remove_file(&final_path)?;
+        file_utils::replace_file_atomically(&staged_path, &final_path)?;
+        // 新旧文件名不同时，残留的旧文件单独删
+        if old_path != final_path {
+            let _ = fs::remove_file(&old_path);
         }
-        fs::rename(&staged_path, &final_path)?;
         let _ = fs::remove_dir(&staging);
 
         info!("光影包更新: {} -> {}", file_name, staged_name);
@@ -240,11 +240,7 @@ fn loaders() -> Vec<String> {
 
 /// 光影包只要知道 MC 版本就能筛选，加载器维度统一按 iris + optifine 处理
 async fn resolve_context(instance_name: &str) -> Result<PackContext, LauncherError> {
-    let instances = crate::services::instance::get_instances().await?;
-    let info = instances
-        .into_iter()
-        .find(|info| info.name == instance_name)
-        .ok_or_else(|| LauncherError::Custom(format!("实例 '{}' 不存在", instance_name)))?;
+    let info = crate::services::instance::get_instance_info(instance_name).await?;
 
     let game_version = info
         .game_version

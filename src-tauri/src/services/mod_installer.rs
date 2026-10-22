@@ -138,9 +138,8 @@ impl ModInstaller {
                 })?,
         };
 
-        // 依赖解析分轮：同一轮里的取版本与下载互不依赖，可以并发；
-        // 下一轮要等这一轮的结果才能知道新发现了哪些依赖。
-        // 串行版本是每个依赖一次 get_version + 一次下载，10 个依赖就是 20 个往返
+        // 依赖解析分轮：同一轮里的取版本与下载互不依赖，可以并发；下一轮要等这一轮的结果才知道新依赖。
+        // 串行时每个依赖一次 get_version + 一次下载，10 个依赖就是 20 个往返
         let mut frontier = vec![root_version_id];
         let mut visited: HashSet<String> = HashSet::new();
         let mut installed: Vec<InstalledMod> = Vec::new();
@@ -254,7 +253,7 @@ impl ModInstaller {
 
         let version = self.modrinth.get_version(&version_id).await?;
 
-        // 先下到临时目录，成功后再替换；下载失败不会把旧版本删掉
+        // 先下到临时目录，成功后再替换；下载失败不会把旧版本删掉。
         let staging = context.game_dir.join("temp").join("mod-staging");
         fs::create_dir_all(&staging)?;
         let staged_name = download_version(&version, &staging).await?;
@@ -267,12 +266,12 @@ impl ModInstaller {
         };
         let final_path = context.mods_dir.join(&final_name);
 
-        // 先删旧文件和同名残留（玩家手动复制过的）：文件名没变时直接 rename 会失败
-        fs::remove_file(&old_path)?;
-        if final_path.exists() {
-            fs::remove_file(&final_path)?;
+        // 替换旧文件走 replace_with_backup：先改名成 .bak 再换新的进来，失败会回滚
+        file_utils::replace_file_atomically(&staged_path, &final_path)?;
+        // 旧文件名可能与新文件名不同（版本换了、禁用状态变了），残留的旧文件要单独删
+        if old_path != final_path {
+            let _ = fs::remove_file(&old_path);
         }
-        fs::rename(&staged_path, &final_path)?;
         let _ = fs::remove_dir(&staging);
 
         info!("模组更新: {} -> {}", file_name, final_name);
@@ -292,8 +291,7 @@ const MAX_CONCURRENT_RESOLVES: usize = 8;
 
 /// 并发取版本并下载一轮依赖，返回 (序号, 安装结果, 新发现的依赖)
 ///
-/// 同一轮内各模组互不依赖，串行只是白等网络；并发上限跟下载线程数走，
-/// 不额外放大连接数。结果按入参顺序返回，保证安装列表的顺序稳定。
+/// 同一轮内各模组互不依赖；并发上限跟下载线程数走，结果按入参顺序返回，保证安装列表顺序稳定
 async fn resolve_and_download(
     context: &ModContext,
     version_ids: Vec<String>,
@@ -384,11 +382,7 @@ async fn resolve_and_download(
 
 /// 从实例元数据里取 MC 版本与加载器，原版实例直接拒绝
 async fn resolve_context(instance_name: &str) -> Result<ModContext, LauncherError> {
-    let instances = instance::get_instances().await?;
-    let info = instances
-        .into_iter()
-        .find(|info| info.name == instance_name)
-        .ok_or_else(|| LauncherError::Custom(format!("实例 '{}' 不存在", instance_name)))?;
+    let info = instance::get_instance_info(instance_name).await?;
 
     let loader = loader_slug(info.loader_type.as_deref()).ok_or_else(|| {
         LauncherError::Custom(

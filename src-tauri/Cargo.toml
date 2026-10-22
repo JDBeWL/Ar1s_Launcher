@@ -1,18 +1,14 @@
 [package]
 name = "ar1s_launcher"
-version = "0.8.6"
+version = "0.8.7"
 description = "Ar1s Launcher"
 authors = ["JDBeWL"]
 edition = "2024"
 rust-version = "1.95.0"
 license = "MIT"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+# 不加 _lib 后缀会和 bin 同名，Windows 上冲突
 name = "ar1s_launcher_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
@@ -32,7 +28,7 @@ sha2 = "0.11"
 base64 = "0.23"
 serde_urlencoded = "0.7"
 rand = "0.10"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 zip = "9.0"
 thiserror = "2"
 log = "0.4"
@@ -40,23 +36,16 @@ fern = "0.7"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1.13"
 sysinfo = "0.39"
-num_cpus = "1.17"
 opener = "0.9"
 tempfile = "3"
 
-# 只用来枚举盘符与判断驱动器类型：对 A..Z 逐个 exists() 时，
-# 遇到已断开的网络映射盘会卡住十几秒
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
-
-# dev 只留行号表：编译与链接更快，panic 回溯仍带文件名和行号
 [profile.dev]
 debug = "line-tables-only"
 
-# 刻意不设 panic = "abort"：下载与安装的容错依赖 tokio 任务 panic 后返回 JoinError，
-# abort 会让整个进程一起崩掉
 [profile.release]
 lto = "fat"
 codegen-units = 1

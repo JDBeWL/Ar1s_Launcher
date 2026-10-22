@@ -3,6 +3,8 @@ import {
   formatTimeAgo,
   formatLastPlayed,
   formatFileSize,
+  formatBytesProgress,
+  formatBytesPerSecond,
   getLoaderIcon,
   getErrorMessage,
   getErrorCode,
@@ -91,6 +93,38 @@ describe('formatFileSize', () => {
   it('非法数值兜底成 0 KB', () => {
     expect(formatFileSize(Number.NaN)).toBe('0 KB');
     expect(formatFileSize(Number.POSITIVE_INFINITY)).toBe('0 KB');
+  });
+});
+
+describe('formatBytesProgress', () => {
+  it('按量级给不同精度', () => {
+    expect(formatBytesProgress(512)).toBe('512 B');
+    expect(formatBytesProgress(1536)).toBe('1.5 KB');
+    expect(formatBytesProgress(1024 * 1024)).toBe('1.00 MB');
+    expect(formatBytesProgress(12.5 * 1024 * 1024)).toBe('12.50 MB');
+  });
+
+  it('和 formatFileSize 刻意不同：进度不取整', () => {
+    expect(formatFileSize(1500)).toBe('1 KB');
+    expect(formatBytesProgress(1500)).toBe('1.5 KB');
+  });
+
+  it('非法数值兜底成 0 B', () => {
+    expect(formatBytesProgress(0)).toBe('0 B');
+    expect(formatBytesProgress(-1)).toBe('0 B');
+    expect(formatBytesProgress(Number.NaN)).toBe('0 B');
+  });
+});
+
+describe('formatBytesPerSecond', () => {
+  it('加 /s 后缀', () => {
+    expect(formatBytesPerSecond(1024)).toBe('1.0 KB/s');
+    expect(formatBytesPerSecond(2.5 * 1024 * 1024)).toBe('2.50 MB/s');
+  });
+
+  it('0 与非法值兜底成 0 B/s', () => {
+    expect(formatBytesPerSecond(0)).toBe('0 B/s');
+    expect(formatBytesPerSecond(Number.NaN)).toBe('0 B/s');
   });
 });
 

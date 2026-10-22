@@ -18,17 +18,14 @@ class MemoryCache {
   private defaultTTL = 5 * 60 * 1000;
   private maxSize = 200;
 
+  /**
+   * 淘汰最久未使用的一条。Map 按插入顺序迭代，而命中时总是先 delete 再 set（见 get/set），
+   * 所以「第一个 key」就是最久未用的那条，不必 O(n) 扫全表找最小 timestamp
+   */
   private evictOldest(): void {
-    let oldestKey: string | null = null;
-    let oldestTime = Infinity;
-    for (const [key, entry] of this.cache.entries()) {
-      if (entry.timestamp < oldestTime) {
-        oldestTime = entry.timestamp;
-        oldestKey = key;
-      }
-    }
-    if (oldestKey !== null) {
-      this.cache.delete(oldestKey);
+    const oldestKey = this.cache.keys().next();
+    if (!oldestKey.done) {
+      this.cache.delete(oldestKey.value);
     }
   }
 
@@ -46,6 +43,9 @@ class MemoryCache {
 
     entry.timestamp = Date.now();
 
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+
     return entry.data as T;
   }
 
@@ -55,6 +55,8 @@ class MemoryCache {
       this.evictOldest();
     }
     const now = Date.now();
+    // 先删再插：覆盖已有 key 时也要把它挪到末尾，否则插入顺序不等于使用顺序
+    this.cache.delete(key);
     this.cache.set(key, {
       data,
       timestamp: now,

@@ -1,18 +1,7 @@
 #!/usr/bin/env node
 /**
  * 版本号单一来源工具
- *
- * 版本号写在三个地方，缺一不可：
- *   - package.json              前端与 npm 生态读它
- *   - src-tauri/Cargo.toml      Rust 编译期 env!("CARGO_PKG_VERSION") 用它（--versionType、诊断包）
- *   - src-tauri/tauri.conf.json Tauri 打包与更新检查用它
- *
- * 手工改三处必然漂移（README 的 badge 曾停在 0.7.2 没人发现）。这里以 package.json 为准，
- * 其余两处与 README badge 都由它派生。
- *
- * 用法：
- *   node scripts/sync-version.mjs           # 检查，不一致就退出码 1（CI 用）
- *   node scripts/sync-version.mjs --write   # 把 package.json 的版本同步到其余位置
+ * 以 package.json 为准，把 Cargo.toml、tauri.conf.json 与 README badge 同步成它；不带 --write 时只检查。
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -27,10 +16,8 @@ const TAURI_CONF = path.join(root, 'src-tauri', 'tauri.conf.json');
 const READMES = [path.join(root, 'README.md'), path.join(root, 'README.zh-CN.md')];
 
 /**
- * Cargo.toml 里只认 [package] 段下的 version
- *
- * 不能取「第一个 version =」：依赖里也有 `version = "2.7"`，
- * 而且 build-dependencies / target 段都可能出现。按段落扫，只认 [package] 之内
+ * Cargo.toml 里只认 [package] 段下的 version：依赖段和 target 段里也有 `version = "…"`，
+ * 取第一个会读到依赖的版本号
  */
 export function readCargoVersion(text) {
   let inPackage = false;
@@ -76,9 +63,7 @@ export function rewriteReadmeBadge(text, version) {
 }
 
 /**
- * 只替换 tauri.conf.json 里第一个 "version" 的值
- *
- * 用 JSON.parse + stringify 往返会重排键顺序、丢掉原有缩进，diff 会变得没法看
+ * 只替换第一个 "version" 的值：JSON.parse + stringify 往返会重排键顺序、丢掉缩进，diff 会变得没法看
  */
 export function rewriteTauriVersion(text, version) {
   return text.replace(/("version"\s*:\s*")[^"]*(")/, `$1${version}$2`);
@@ -96,7 +81,6 @@ function main() {
 
   const problems = [];
 
-  // Cargo.toml
   const cargoText = readFileSync(CARGO_TOML, 'utf8');
   const cargoVersion = readCargoVersion(cargoText);
   if (cargoVersion !== expected) {
@@ -104,7 +88,6 @@ function main() {
     if (write) writeFileSync(CARGO_TOML, rewriteCargoVersion(cargoText, expected));
   }
 
-  // tauri.conf.json
   const tauriText = readFileSync(TAURI_CONF, 'utf8');
   const tauriVersion = JSON.parse(tauriText).version;
   if (tauriVersion !== expected) {
@@ -112,7 +95,6 @@ function main() {
     if (write) writeFileSync(TAURI_CONF, rewriteTauriVersion(tauriText, expected));
   }
 
-  // README badge
   for (const readme of READMES) {
     let text;
     try {

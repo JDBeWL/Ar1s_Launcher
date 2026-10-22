@@ -23,6 +23,16 @@ static CONFIG_CACHE: std::sync::LazyLock<RwLock<Option<CachedConfig>>> =
 
 static CONFIG_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
+/// 上次真正 stat 配置文件的时间：`load_config()` 调用极密（遍历实例与资源包时每个都要问一次），
+/// 每次 `fs::metadata` 是纯浪费；不检查又会读到另一个实例刚写进去的旧值。
+/// 折中：最多每 [`STAMP_TTL`] 真 stat 一次，期间的变化最晚 500ms 后被看到
+static LAST_STAMP_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// 上一次 stat 的结果，TTL 内直接复用
+static LAST_STAMP: std::sync::Mutex<Option<FileStamp>> = std::sync::Mutex::new(None);
+
+const STAMP_TTL: Duration = Duration::from_millis(500);
+
 const CONFIG_LOCK_TIMEOUT: Duration = Duration::from_secs(3);
 const AUTH_LOCK_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -114,10 +124,30 @@ fn file_stamp(path: &Path) -> FileStamp {
 }
 
 fn current_cache_stamp() -> FileStamp {
-    file_stamp(&config_path())
+    let now = std::time::Instant::now();
+
+    if let Some(at) = *LAST_STAMP_AT.lock().unwrap_or_else(|e| e.into_inner())
+        && now.duration_since(at) < STAMP_TTL
+        && let Some(stamp) = *LAST_STAMP.lock().unwrap_or_else(|e| e.into_inner())
+    {
+        return stamp;
+    }
+
+    let stamp = file_stamp(&config_path());
+    *LAST_STAMP.lock().unwrap_or_else(|e| e.into_inner()) = Some(stamp);
+    *LAST_STAMP_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
+    stamp
+}
+
+/// 写完配置后必须让下一次 `load_config` 立刻看到新内容，
+/// 否则会命中 TTL 内缓存的旧 stamp，读回旧配置
+fn invalidate_stamp_cache() {
+    *LAST_STAMP_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *LAST_STAMP.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 fn cache_config(config: Arc<GameConfig>) {
+    invalidate_stamp_cache();
     let stamp = current_cache_stamp();
     with_write_lock(|cache| {
         *cache = Some(CachedConfig { config, stamp });
@@ -133,6 +163,7 @@ pub fn preload_config() -> Result<(), LauncherError> {
 }
 
 pub fn invalidate_config_cache() {
+    invalidate_stamp_cache();
     with_write_lock(|cache| {
         *cache = None;
     });

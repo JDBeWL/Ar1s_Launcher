@@ -42,7 +42,6 @@ describe('Cargo.toml 版本号', () => {
     expect(out).toContain('tauri-build = { version = "2.7", features = [] }');
     expect(out).toContain('uuid = { version = "1.28", features = ["v3"] }');
     expect(out).toContain('serde = { version = "1.0", features = ["derive"] }');
-    // 只有一行 version 被改
     expect(out.match(/9\.9\.9/g)).toHaveLength(1);
   });
 
@@ -87,7 +86,6 @@ describe('tauri.conf.json 版本号', () => {
 
     expect(JSON.parse(out).version).toBe('1.0.0');
     expect(JSON.parse(out).productName).toBe('Ar1s Launcher');
-    // 不能因为 JSON 往返把格式重排
     expect(out).toBe(CONF.replace('0.8.5', '1.0.0'));
   });
 });

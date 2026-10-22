@@ -23,8 +23,8 @@ pub fn load_config_key(key: String) -> Result<Option<String>, LauncherError> {
 }
 
 #[tauri::command]
-pub fn save_config_key(key: String, value: String) -> Result<(), LauncherError> {
-    config::save_config_key(key, value)
+pub async fn save_config_key(key: String, value: String) -> Result<(), LauncherError> {
+    run_blocking(move || config::save_config_key(key, value)).await
 }
 
 #[tauri::command]
@@ -38,8 +38,8 @@ pub async fn get_game_dir_info() -> Result<GameDirInfo, LauncherError> {
 }
 
 #[tauri::command]
-pub fn set_game_dir(path: String, window: tauri::Window) -> Result<(), LauncherError> {
-    config::set_game_dir(path, &window)
+pub async fn set_game_dir(path: String, window: tauri::Window) -> Result<(), LauncherError> {
+    run_blocking(move || config::set_game_dir(path, &window)).await
 }
 
 #[tauri::command]
@@ -48,8 +48,8 @@ pub fn get_download_threads() -> Result<u16, LauncherError> {
 }
 
 #[tauri::command]
-pub fn set_download_threads(threads: u16) -> Result<(), LauncherError> {
-    config::set_download_threads(threads)
+pub async fn set_download_threads(threads: u16) -> Result<(), LauncherError> {
+    run_blocking(move || config::set_download_threads(threads)).await
 }
 
 #[tauri::command]
@@ -92,11 +92,14 @@ pub fn get_jvm_advanced_options() -> Result<JvmAdvancedOptions, LauncherError> {
 }
 
 #[tauri::command]
-pub fn set_jvm_advanced_options(options: JvmAdvancedOptions) -> Result<(), LauncherError> {
-    config::update_config(|cfg| {
-        cfg.jvm_advanced = options;
-        Ok(())
+pub async fn set_jvm_advanced_options(options: JvmAdvancedOptions) -> Result<(), LauncherError> {
+    run_blocking(move || {
+        config::update_config(|cfg| {
+            cfg.jvm_advanced = options;
+            Ok(())
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -137,17 +140,20 @@ pub fn get_window_settings() -> Result<WindowSettings, LauncherError> {
 }
 
 #[tauri::command]
-pub fn set_window_settings(
+pub async fn set_window_settings(
     width: Option<u32>,
     height: Option<u32>,
     fullscreen: bool,
 ) -> Result<(), LauncherError> {
-    config::update_config(|config| {
-        config.window_width = width;
-        config.window_height = height;
-        config.fullscreen = fullscreen;
-        Ok(())
+    run_blocking(move || {
+        config::update_config(|config| {
+            config.window_width = width;
+            config.window_height = height;
+            config.fullscreen = fullscreen;
+            Ok(())
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -156,6 +162,6 @@ pub fn get_last_selected_version() -> Option<String> {
 }
 
 #[tauri::command]
-pub fn set_last_selected_version(version: String) -> Result<(), LauncherError> {
-    config::set_last_selected_version(&version)
+pub async fn set_last_selected_version(version: String) -> Result<(), LauncherError> {
+    run_blocking(move || config::set_last_selected_version(&version)).await
 }

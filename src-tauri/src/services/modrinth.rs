@@ -32,8 +32,7 @@ fn exponential_backoff(attempt: u32) -> std::time::Duration {
 
 /// 读 `Retry-After`：Modrinth 在限流时会给出剩余秒数
 ///
-/// 只支持秒数形式（HTTP 日期形式对这里没有意义）；缺省或解析不出时返回 None，
-/// 由调用方退回指数退避。上限 30 秒：再久也不该让用户干等。
+/// 只认秒数形式（HTTP 日期形式对这里没意义）；缺省或解析不出时返回 None，由调用方退回指数退避，上限 30 秒
 fn retry_after(response: &reqwest::Response) -> Option<std::time::Duration> {
     let raw = response
         .headers()
@@ -66,13 +65,9 @@ impl ModrinthService {
         Self
     }
 
-    /// 带退避重试地发一次请求
+    /// 带退避重试地发一次请求：429 优先遵循 `Retry-After`，其余可重试的状态码按指数退避
     ///
-    /// 以前只在**传输层**出错时重试，服务端返回 429 / 5xx 时当成成功交给调用方，
-    /// 调用方只会报「Modrinth API返回错误: 429」而不会重试。批量接口（导出时的
-    /// `version_files`、`projects`）恰恰最容易撞上速率限制，这里补上：
-    /// - 429：优先遵循 `Retry-After`，没给就按指数退避
-    /// - 5xx：按指数退避重试
+    /// 批量接口（version_files、projects）最容易撞上速率限制，只重试传输层错误不够
     async fn retry_request(
         &self,
         request_fn: impl Fn(&Client) -> reqwest::RequestBuilder,
@@ -532,10 +527,9 @@ impl ModrinthService {
         Ok(result)
     }
 
-    /// 批量按 sha1 反查文件所属版本。
+    /// 批量按 sha1 反查文件所属版本
     ///
-    /// 导出整合包时用：本地模组只要是 Modrinth 上有的文件，就没必要塞进 overrides，
-    /// 直接按哈希查回版本，写进 index 的 files 里，别人安装时能走官方 CDN。
+    /// 导出整合包时用：本地模组只要是 Modrinth 上有的文件就按哈希查回版本，写进 index 的 files，安装时走官方 CDN
     pub async fn get_versions_by_hashes(
         &self,
         hashes: Vec<String>,

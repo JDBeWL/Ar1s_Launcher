@@ -97,13 +97,15 @@ h4 + p {
 
 /* 中文子集：自托管 Noto Sans SC（OFL-1.1）可变字体裁剪，一个文件覆盖全部字重
    字符集 = 界面源码实际用字 ∪ GB2312 一二级汉字 ∪ 拉丁基本区 ∪ 中文标点；重新生成：python scripts/build-cjk-subset.py
-   放 public/fonts/ 而不是走 Vite assets：OFL-1.1 要求分发时附带授权文本，public/ 会原样拷进 dist */
+   放 public/fonts/ 而不是走 Vite assets：OFL-1.1 要求分发时附带授权文本，public/ 会原样拷进 dist
+   font-display: block —— 与上面 Roboto 同理：本地文件毫秒级加载，swap 会让首屏先按系统
+   回退字体排一遍版、字体到位后再整页重排一次；界面正文大部分是中文，闪动比拉丁文更明显 */
 @font-face {
   font-family: 'Noto Sans SC Subset';
   src: url('/fonts/noto-sans-sc-subset.woff2') format('woff2');
   font-weight: 100 900;
   font-style: normal;
-  font-display: swap;
+  font-display: block;
   unicode-range: U+2E80-2EFF, U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+FE30-FE4F, U+FF00-FFEF, U+2000-206F;
 }
 
@@ -147,7 +149,7 @@ h4 + p {
   font-size: 0.75rem;
 }
 
-/* 亚像素光学校正：图标与汉字的墨迹重心都不在盒子几何中心，CSS 算不出来，只能实测后补偿。
+/* 图标与汉字的墨迹重心都不在盒子几何中心，CSS 算不出来，只能实测后补偿。
    先把行盒钉成 1rem（组件层的 line-height: normal 随回退字体漂移，行盒一高于字形内容，汉字基线就被压低、与同行 mdi 图标错开），
    再补位移。下面三个取值绑当前字体栈（Roboto + Noto Sans SC 子集）和这个行盒，换字体或改行高要重新实测 */
 .v-btn--size-x-small,

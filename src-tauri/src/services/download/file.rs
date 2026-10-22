@@ -1,11 +1,9 @@
 //! 单个文件下载
 //!
-//! 写 .part 临时文件按 Range 续传，边写边算 sha1（写完后不再整盘重读一遍），
+//! 写 .part 临时文件按 Range 续传，边写边算 sha1（写完不再整盘重读），
 //! 校验失败时切换到 fallback_url。
 //!
-//! 两条加速路径，都只在「值得」的时候启用，避免为小文件多花请求：
-//! - 竞速：主源与备源同时发请求，先回的胜出，不必等主源超时再换源
-//! - 分段：大文件切成几段各用一条连接，单连接拿不满带宽时能叠起来
+//! 竞速（主备源同时发，先回的胜出）与分段（大文件切几段各用一条连接）都只在体积值得时才启用
 
 use crate::errors::LauncherError;
 use crate::models::DownloadJob;
@@ -19,13 +17,12 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 /// 写盘缓冲
 ///
-/// `tokio::fs::File` 的每次写都是一次独立的阻塞池派发，而 reqwest 的 chunk 通常只有
-/// 8–16 KB：一个 100 MB 的文件就是上万次线程池往返。攒到 256 KB 再落盘，派发次数降两个数量级
+/// `tokio::fs::File` 每次写都是一次阻塞池派发，而 reqwest 的 chunk 只有 8–16 KB：
+/// 100 MB 文件就是上万次往返，攒到 256 KB 再落盘
 const WRITE_BUFFER_BYTES: usize = 256 * 1024;
 
 /// 两个源各发一次请求做竞速的起跳体积
-///
-/// 再小就不值了：几千个资源文件每个多一次请求，换来的延迟收益抵不过翻倍的请求量
+/// 再小就不值：几千个资源文件每个多一次请求，换来的延迟收益抵不过翻倍的请求量
 const RACE_MIN_BYTES: u64 = 2 * 1024 * 1024;
 
 /// 分段下载的起跳体积
@@ -36,9 +33,8 @@ const MULTIPART_MAX_SEGMENTS: usize = 4;
 
 /// 全进程额外分段连接的总预算
 ///
-/// `download_threads` 限的是「同时在下的文件数」，不是连接数。一条大文件切 4 段
-/// 就是 4 条连接，不设总量上限的话 16 线程能开出 64 条，容易被服务端限速甚至拒绝。
-/// 这里用「借」的方式：借到几段就用几段，借不到就退回单连接
+/// `download_threads` 限的是同时在下的文件数，不是连接数：一条大文件切 4 段就是 4 条连接，
+/// 不设总量上限 16 线程能开出 64 条，容易被服务端限速甚至拒绝。借到几段用几段，借不到退回单连接
 const MULTIPART_BUDGET: usize = 24;
 
 static MULTIPART_PERMITS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
@@ -229,8 +225,7 @@ async fn download_with_resume(
 
 /// 按体积与续传状态挑下载策略
 ///
-/// 续传必须单连接：分段要求整段重来，半截文件在分段模式下没有意义。
-/// 全新下载的大文件优先分段；分段被服务端拒绝（不认 Range）时自动退回单连接
+/// 续传必须单连接（分段要求整段重来）；全新的大文件优先分段，被服务端拒绝时退回单连接
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_download(
     client: &reqwest::Client,
@@ -287,10 +282,8 @@ struct OpenedStream {
 
 /// 主源与备源竞速拿到第一条可用连接
 ///
-/// 镜像抽风时单连接要等满读超时（60s）才切源，这期间整个文件毫无进度。
-/// 两源同时发请求、谁先回一个正常响应就用谁，另一个立刻丢弃。
-/// 只在「主源」上启用：调用方主动传进来的 fallback 说明主源已经失败过，
-/// 再回头去试它只是白费一次请求
+/// 镜像抽风时单连接要等满读超时（60s）才切源，这期间整个文件毫无进度；两源同时发，先回者胜出。
+/// 只在主源上启用：调用方主动传进来的 fallback 说明主源已经失败过，再试它只是白费一次请求
 async fn open_stream(
     client: &reqwest::Client,
     job: &DownloadJob,
@@ -543,8 +536,7 @@ fn acquire_multipart_permits(size: u64) -> Option<(usize, Vec<tokio::sync::Owned
 
 /// 按体积决定想切几段
 ///
-/// 每段至少要几 MB 才划算：段太多的话每段都要独立的请求往返与落盘偏移，
-/// 小段反而比顺序写慢
+/// 每段至少要几 MB 才划算：段太多则每段都要独立的请求往返与落盘偏移，小段反而比顺序写慢
 fn multipart_segments(size: u64) -> usize {
     const MIN_SEGMENT_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -849,12 +841,9 @@ async fn open_sink(
 
 /// 把 `.part` 前 `bytes` 个字节重新喂进哈希
 ///
-/// 只有真正中断过的文件才会走这里，读盘量等于上次已下载的量；不补算的话
-/// 续传完成后的 sha1 必然对不上，等于白下。
-///
-/// 重试会把这里重复跑很多遍（batch 最多 5 次、整合包 3 次），所以先查进程内缓存：
-/// 同一个 `.part` 上次算到哪个长度、当时的哈希器状态，都记下来直接接着用。
-/// 缓存命中要求「文件长度没变过」，长度一变说明中途又写了新数据，只能重算
+/// 只有真正中断过的文件才会走这里，读盘量等于上次已下载的量；不补算的话续传完成后的 sha1 必然对不上。
+/// 重试会把这里重复跑很多遍，所以先查进程内缓存：命中要求「文件长度没变过」，
+/// 长度一变说明中途又写了新数据，只能重算
 async fn hash_prefix(path: &Path, bytes: u64) -> Result<FileHasher, LauncherError> {
     if let Some(hasher) = cached_prefix(path, bytes) {
         debug!(
@@ -893,8 +882,7 @@ async fn hash_prefix(path: &Path, bytes: u64) -> Result<FileHasher, LauncherErro
 
 /// 续传前缀哈希的进程内缓存：路径 -> (已算长度, 该长度处的哈希器状态)
 ///
-/// 只用来省重试时的重读，丢了不影响正确性（下次重算一遍即可）。
-/// 键里带上文件长度做校验，防止同一个 .part 被写入更多数据后仍命中旧状态
+/// 只用来省重试时的重读，丢了不影响正确性；键里带上文件长度，防止 .part 又写了数据后仍命中旧状态
 static PREFIX_CACHE: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, FileHasher)>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -1101,7 +1089,6 @@ mod tests {
         assert_eq!(multipart_segments(4 * 1024 * 1024), 1);
         assert_eq!(multipart_segments(8 * 1024 * 1024), 2);
         assert_eq!(multipart_segments(16 * 1024 * 1024), 4);
-        // 再大也不会超过上限，否则单文件就吃掉整个连接预算
         assert_eq!(multipart_segments(1024 * 1024 * 1024), 4);
         assert_eq!(multipart_segments(u64::MAX), MULTIPART_MAX_SEGMENTS);
     }
@@ -1293,7 +1280,6 @@ mod tests {
         .await
         .expect("分段下载应当成功");
 
-        // 内容必须逐字节相等：段区间算错会立刻在这里暴露
         let written = std::fs::read(&target).unwrap();
         assert_eq!(written.len(), size, "落盘长度必须等于文件大小");
         assert!(written == data, "分段拼回来的内容与原始数据不一致");

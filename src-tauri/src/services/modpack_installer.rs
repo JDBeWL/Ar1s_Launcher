@@ -1,8 +1,7 @@
 //! 整合包安装模块
 //!
-//! 下载解压 Modrinth 整合包（或直接读取本地的 .mrpack），按 modrinth.index.json 并发补下
-//! 模组与依赖加载器，失败或取消时回滚实例。在线安装与本地导入共用同一条安装流水线，
-//! 区别只在「压缩包从哪来、展示信息从哪取」。
+//! 下载 Modrinth 整合包或直接读取本地 .mrpack，按 modrinth.index.json 并发补下模组与依赖加载器，
+//! 失败或取消时回滚实例。在线安装与本地导入共用同一条流水线，区别只在压缩包与展示信息从哪来。
 
 use crate::errors::LauncherError;
 use crate::models::DownloadJob;
@@ -461,7 +460,12 @@ impl ModpackInstaller {
         check_cancelled()?;
 
         if targets.extract_dir.exists() {
-            fs::remove_dir_all(&targets.extract_dir)?;
+            // 删除整个解压临时目录耗时不可控，不能放在 async worker 上
+            let extract_dir_owned = targets.extract_dir.clone();
+            tokio::task::spawn_blocking(move || fs::remove_dir_all(&extract_dir_owned))
+                .await
+                .map_err(|e| LauncherError::Custom(format!("清理旧目录失败: {}", e)))?
+                .map_err(|e| LauncherError::Custom(format!("清理旧目录失败: {}", e)))?;
         }
         fs::create_dir_all(&targets.extract_dir)?;
 
@@ -487,7 +491,6 @@ impl ModpackInstaller {
         send_progress(50, "复制整合包文件...", false);
         check_cancelled()?;
 
-        // 同样是纯同步的递归拷贝
         let extract_dir = targets.extract_dir.clone();
         let content_root = targets.content_root.clone();
         tokio::task::spawn_blocking(move || copy_overrides(&extract_dir, &content_root))
@@ -505,8 +508,7 @@ impl ModpackInstaller {
         send_progress(55, "下载模组文件与游戏核心...", false);
         check_cancelled()?;
 
-        // 模组下载和「游戏核心 + 加载器」互不依赖，串行只是白等网络。
-        // 两段都用各自的信号量限流，同时跑不会把连接数翻倍。
+        // 模组下载和「游戏核心 + 加载器」互不依赖，串行只是白等网络；两段各用自己的信号量限流。
         //
         // 进度区间必须错开：模组占 55..74，加载器阶段只在 74 上报不确定态，
         // 否则核心先装完会把进度推到 80，模组随后又报 62，进度条就倒退了
@@ -635,8 +637,7 @@ impl ModpackInstaller {
             };
 
             let handle = tokio::spawn(async move {
-                // 许可在任务内部获取：在派发循环里 await 的话，大文件占满槽位会卡住
-                // 整个循环，后面的小文件连排队的机会都没有（与 batch.rs 保持一致）
+                // 许可在任务内部获取，理由同 batch.rs 的分段池：在派发循环里 await 会卡住整个循环
                 let Ok(_permit) = semaphore.acquire_owned().await else {
                     state.status.store(FILE_PENDING, Ordering::Release);
                     return;

@@ -37,10 +37,21 @@ impl DownloadState {
     }
 
     pub fn save_to_file(&mut self, path: &std::path::Path) -> Result<(), std::io::Error> {
-        let content = serde_json::to_string(self).map_err(std::io::Error::other)?;
+        let content = self.to_json()?;
         std::fs::write(path, content)?;
         self.dirty = false;
         Ok(())
+    }
+
+    /// 只序列化、不落盘。调用方拿它配合 [`Self::mark_saved`]，先放开 `tokio::sync::Mutex`
+    /// 再在阻塞线程里写文件——否则一次 `fs::write` 会把所有等着 `mark_completed` 的任务一起卡住
+    pub fn to_json(&self) -> Result<String, std::io::Error> {
+        serde_json::to_string(self).map_err(std::io::Error::other)
+    }
+
+    /// 落盘成功后调用，清掉 dirty 标记
+    pub fn mark_saved(&mut self) {
+        self.dirty = false;
     }
 
     pub fn mark_dirty(&mut self) {

@@ -10,7 +10,7 @@ import { api } from '../services/api';
 import { translate } from '../i18n';
 import { useNotificationStore } from './notificationStore';
 import { getErrorMessage, getErrorCode } from '../utils/format';
-import { logError } from '../utils/logger';
+import { logError, logInfo } from '../utils/logger';
 
 export type StoreDownloadStatus = DownloadStatus | 'idle';
 
@@ -84,7 +84,7 @@ export const useDownloadStore = defineStore('download', () => {
       });
       downloadProgressUnlisten = unlisten;
       isInitialized.value = true;
-      logError('Download store initialized', undefined, 'DownloadStore');
+      logInfo('Download store initialized', 'DownloadStore');
     } catch (err) {
       logError('Failed to initialize download store', err, 'DownloadStore');
     }

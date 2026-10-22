@@ -30,6 +30,9 @@ const MAX_NOTIFICATIONS = 5;
 export const useNotificationStore = defineStore('notification', () => {
   const notifications = ref<Notification[]>([]);
 
+  /** 每条通知的自动消失定时器；手动关闭或超出上限时要把它清掉，否则留一个空转的定时器 */
+  const timers = new Map<number, ReturnType<typeof setTimeout>>();
+
   const dialogVisible = ref(false);
   const dialogTitle = ref('');
   const dialogContent = ref('');
@@ -53,13 +56,18 @@ export const useNotificationStore = defineStore('notification', () => {
     notifications.value.push({ id, type, title, message, timeout });
 
     if (notifications.value.length > MAX_NOTIFICATIONS) {
-      notifications.value.splice(0, notifications.value.length - MAX_NOTIFICATIONS);
+      const dropped = notifications.value.splice(0, notifications.value.length - MAX_NOTIFICATIONS);
+      for (const old of dropped) {
+        clearTimer(old.id);
+      }
     }
 
     if (timeout > 0) {
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        timers.delete(id);
         removeNotification(id);
       }, timeout);
+      timers.set(id, timer);
     }
 
     return id;
@@ -86,7 +94,16 @@ export const useNotificationStore = defineStore('notification', () => {
     return notify('info', title, message);
   }
 
+  function clearTimer(id: number) {
+    const timer = timers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timers.delete(id);
+    }
+  }
+
   function removeNotification(id: number) {
+    clearTimer(id);
     const index = notifications.value.findIndex((n) => n.id === id);
     if (index > -1) {
       notifications.value.splice(index, 1);

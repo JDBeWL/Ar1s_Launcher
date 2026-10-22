@@ -69,8 +69,7 @@ export function useVersionManager() {
     }
   }
 
-  // 组件卸载时自动清理：以前只有手动调用 cleanup 才移除监听，而没有任何调用方调它，
-  // 于是在 Home 与下载页之间来回切换会不断叠加 focus 监听，每次切回窗口都触发多次 IPC
+  // 卸载时必须移除监听：在首页与下载页之间来回切会不断叠加 focus 监听，每次切回窗口触发多次 IPC
   onScopeDispose(cleanup);
 
   return {

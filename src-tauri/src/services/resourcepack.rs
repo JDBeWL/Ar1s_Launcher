@@ -124,12 +124,12 @@ pub fn list_resource_packs(instance_name: &str) -> Result<Vec<ResourcePackInfo>,
         });
     }
 
-    packs.sort_by(|a, b| {
-        b.enabled.cmp(&a.enabled).then_with(|| {
-            a.display_name
-                .to_lowercase()
-                .cmp(&b.display_name.to_lowercase())
-        })
+    // 键只算一次：比较器里现算 to_lowercase 每次比较都要分配两个 String
+    packs.sort_by_cached_key(|pack| {
+        (
+            std::cmp::Reverse(pack.enabled),
+            pack.display_name.to_lowercase(),
+        )
     });
     Ok(packs)
 }
@@ -267,7 +267,15 @@ pub async fn import_resource_packs(
             if !source_path.join("pack.mcmeta").is_file() {
                 Err(LauncherError::Custom("不是资源包目录".to_string()))
             } else {
-                file_utils::copy_dir_all(&source_path, &target).map_err(LauncherError::Io)
+                // 递归复制整个资源包目录，文件多时会长时间占住线程
+                let source_owned = source_path.clone();
+                let target_owned = target.clone();
+                tokio::task::spawn_blocking(move || {
+                    file_utils::copy_dir_all(&source_owned, &target_owned)
+                        .map_err(LauncherError::Io)
+                })
+                .await
+                .map_err(|e| LauncherError::Custom(format!("导入资源包失败: {}", e)))?
             }
         } else if source_path.is_file() {
             fs::copy(&source_path, &target)
@@ -333,9 +341,7 @@ fn entry_size(path: &Path, is_directory: bool, depth: u8) -> u64 {
 }
 
 /// 一次打开 zip 同时取 metadata 与图标
-///
-/// 以前 `read_pack_meta` 和 `read_pack_icon` 各开一次 `ZipArchive`：同一个包的
-/// 中央目录被解析两遍，50 个包就是 100 次。这里只开一次。
+/// 同一个包的中央目录只解析一遍，50 个包不再变成 100 次打开
 fn read_pack_details(path: &Path, is_directory: bool) -> (PackMeta, Option<String>) {
     if is_directory {
         let meta = fs::read(path.join("pack.mcmeta"))
@@ -529,13 +535,10 @@ fn write_options(path: &Path, lines: &[String], crlf: bool) -> Result<(), Launch
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    // 先写临时文件再替换：中途失败不会留下半截 options.txt，把玩家的设置全弄丢
+    // 先写临时文件再走 .bak 回滚替换：中途失败不会留下半截 options.txt，把玩家的设置全弄丢
     let temp = path.with_extension("txt.ar1s-tmp");
     fs::write(&temp, text)?;
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    fs::rename(&temp, path)?;
+    crate::utils::file_utils::replace_file_atomically(&temp, path)?;
     Ok(())
 }
 
@@ -796,7 +799,6 @@ mod tests {
         write_pack_zip(&zip_path, r#"{"pack":{"pack_format":34}}"#, Some(png));
 
         let (meta, icon) = super::read_pack_details(&zip_path, false);
-        // 一次打开同时拿到元数据与图标：这正是去掉两次 zip 解析的目的
         assert_eq!(meta.min_format, Some(34));
         let icon = icon.unwrap();
         assert!(icon.starts_with("data:image/png;base64,"));
