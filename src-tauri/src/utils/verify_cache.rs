@@ -161,23 +161,76 @@ pub fn remember(
 }
 
 /// 把内存里的指纹写回磁盘；没有变化或没绑定目录时直接返回
+///
+/// 序列化在读锁下进行：只需要 `&`，并发读不受影响，且不必先把整表克隆一份出来。
+/// 以前是在写锁里 `clone()` 整表、再转成 `HashMap<String, Entry>`、再序列化，
+/// 20k 条的瞬时内存约为缓存本身的 3 倍，这段时间所有校验线程都被挡在锁外
 pub fn flush() {
-    let (path, entries) = {
+    let path = {
         let mut cache = write_lock();
         if !cache.dirty {
             return;
         }
+        // 先清 dirty：序列化期间若有新的 remember，它会重新置位，下次 flush 再写一遍
         cache.dirty = false;
         let Some(path) = cache.path.clone() else {
             return;
         };
-        (path, cache.entries.clone())
+        path
     };
 
-    if let Err(error) = save_to(&path, &entries) {
+    let (text, count) = {
+        let cache = read_lock();
+        let count = cache.entries.len();
+        match serde_json::to_string(&CacheFileRef {
+            files: FilesRef(&cache.entries),
+        }) {
+            Ok(text) => (text, count),
+            Err(error) => {
+                warn!("序列化校验缓存失败: {}", error);
+                // 没写成，把 dirty 放回去，下次还有机会
+                write_lock().dirty = true;
+                return;
+            }
+        }
+    };
+
+    if let Err(error) = save_text(&path, &text) {
         warn!("写入校验缓存失败: {}", error);
     } else {
-        debug!("校验缓存已保存 {} 条", entries.len());
+        debug!("校验缓存已保存 {} 条", count);
+    }
+}
+
+/// 序列化用的借用视图：直接引用内存里的表，不复制任何 Entry
+///
+/// JSON 的对象键必须是字符串，而内存里用 `PathBuf` 做键；
+/// 这里转成 `&str` 借用传出，省掉「整表 clone + 每键 to_string」这两份多余分配
+struct CacheFileRef<'a> {
+    files: FilesRef<'a>,
+}
+
+struct FilesRef<'a>(&'a HashMap<PathBuf, Entry>);
+
+impl Serialize for CacheFileRef<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("files", &self.files)?;
+        map.end()
+    }
+}
+
+impl Serialize for FilesRef<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (path, entry) in self.0 {
+            map.serialize_entry(path.to_string_lossy().as_ref(), entry)?;
+        }
+        map.end()
     }
 }
 
@@ -199,13 +252,19 @@ fn load(path: &Path) -> HashMap<PathBuf, Entry> {
 }
 
 /// 先写临时文件再 rename，避免中途退出留下半截 JSON
+///
+/// 生产路径走 `flush` 的借用序列化；这里保留一份「从表直接写盘」的入口给测试用
+#[cfg(test)]
 fn save_to(path: &Path, entries: &HashMap<PathBuf, Entry>) -> std::io::Result<()> {
-    let files: HashMap<String, Entry> = entries
-        .iter()
-        .map(|(key, entry)| (key.to_string_lossy().into_owned(), entry.clone()))
-        .collect();
-    let text = serde_json::to_string(&CacheFile { files }).map_err(std::io::Error::other)?;
+    let text = serde_json::to_string(&CacheFileRef {
+        files: FilesRef(entries),
+    })
+    .map_err(std::io::Error::other)?;
+    save_text(path, &text)
+}
 
+/// 已经是序列化好的文本，直接落盘
+fn save_text(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -322,5 +381,36 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&path, b"hello world").unwrap();
         assert_eq!(known_hash(&path, &std::fs::metadata(&path).unwrap()), None);
+    }
+
+    /// flush 现在改用借用视图直接序列化，产出的 JSON 结构必须和原来完全一致，
+    /// 否则升级后老缓存会读不回来
+    #[test]
+    fn test_lazy_serialization_matches_the_saved_format() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("verify_cache.json");
+
+        let mut entries = HashMap::new();
+        entries.insert(
+            PathBuf::from("/games/minecraft/assets/objects/ab/abcdef"),
+            entry(1024, Some(1_700_000_000_000_000_000), Some("abc123")),
+        );
+
+        let text = serde_json::to_string(&super::CacheFileRef {
+            files: super::FilesRef(&entries),
+        })
+        .unwrap();
+
+        // 顶层必须是 {"files": {...}}，键是路径字符串
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(parsed["files"].is_object());
+        assert_eq!(
+            parsed["files"]["/games/minecraft/assets/objects/ab/abcdef"]["len"],
+            1024
+        );
+
+        // 落盘再读回来，内容要和内存里一致
+        save_to(&path, &entries).unwrap();
+        assert_eq!(load(&path), entries);
     }
 }

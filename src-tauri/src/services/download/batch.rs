@@ -487,16 +487,6 @@ fn spawn_download_task(
             return Ok::<(), LauncherError>(());
         }
 
-        // 许可在这里才获取，派发循环不会被大文件池卡住
-        let permit = match semaphore.acquire_owned().await {
-            Ok(permit) => permit,
-            Err(_) => return Ok(()),
-        };
-        if !state.load(Ordering::Acquire) || global_cancel.load(Ordering::Acquire) {
-            drop(permit);
-            return Ok(());
-        }
-
         {
             let mut state = download_state.lock().await;
             state.start_download(job.url.clone(), job.path.clone());
@@ -508,6 +498,17 @@ fn spawn_download_task(
         const MAX_JOB_RETRIES: usize = 5;
         for retry in 0..MAX_JOB_RETRIES {
             if !state.load(Ordering::Acquire) || global_cancel.load(Ordering::Acquire) {
+                break;
+            }
+
+            // 许可逐次重试各自申请：以前在循环外拿一次，一个持续失败的文件会
+            // 连着槽位睡满 1+2+4+8=15 秒退避，小文件池很容易被几个坏文件整个占死
+            let permit = match semaphore.clone().acquire_owned().await {
+                Ok(permit) => permit,
+                Err(_) => break,
+            };
+            if !state.load(Ordering::Acquire) || global_cancel.load(Ordering::Acquire) {
+                drop(permit);
                 break;
             }
 
@@ -525,7 +526,7 @@ fn spawn_download_task(
             };
             debug!("Downloading file: {} ({})", current_url, attempt_str);
 
-            match download_file(
+            let result = download_file(
                 &http,
                 &job,
                 current_url,
@@ -534,8 +535,11 @@ fn spawn_download_task(
                 &bytes_downloaded,
                 &bytes_since_last,
             )
-            .await
-            {
+            .await;
+            // 先还槽位再决定要不要退避，退避期间不再占着并发名额
+            drop(permit);
+
+            match result {
                 Ok(_) => {
                     files_downloaded.fetch_add(1, Ordering::Relaxed);
                     current_job_error = None;
@@ -573,7 +577,6 @@ fn spawn_download_task(
             state.finish_download(&job.url);
         }
 
-        drop(permit);
         Ok::<(), LauncherError>(())
     })
 }

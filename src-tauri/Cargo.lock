@@ -60,7 +60,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "ar1s_launcher"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -85,6 +85,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "uuid",
+ "windows-sys 0.60.2",
  "zip",
 ]
 

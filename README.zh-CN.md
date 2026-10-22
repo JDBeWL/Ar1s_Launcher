@@ -4,7 +4,7 @@
 
 一个基于Tauri框架构建的现代化Minecraft启动器，使用Vuetify提供Material Design 3风格的用户界面。
 
-![Version](https://img.shields.io/badge/version-0.7.2-blue)
+![Version](https://img.shields.io/badge/version-0.8.6-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2.12-orange)
 ![Vue](https://img.shields.io/badge/Vue-3.5-green)
 ![Rust](https://img.shields.io/badge/Rust-1.95+-red)
@@ -119,6 +119,18 @@ pnpm run build
 # 构建Tauri应用
 pnpm run tauri build
 ```
+
+常用检查：
+
+```bash
+pnpm run type-check
+pnpm test
+pnpm version:check    # 校验三处版本号与 README badge 是否一致
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+版本号写在 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 与 README 的 badge 里，
+以 `package.json` 为唯一来源：改完它再跑 `pnpm version:sync` 同步其余位置。CI 会校验一致性。
 
 配置、日志、登录凭据与默认的 `.minecraft` 都在 exe 同级目录，升级时替换 exe 即可。发布压缩包需同时带上 `LICENSE`。
 

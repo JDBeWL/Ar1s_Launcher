@@ -95,15 +95,18 @@ pub fn build_classpath(
 
         let path = libraries_base_dir.join(&file.relative_path);
         if path.exists() {
-            emit(
-                "log-debug",
-                format!("添加到Classpath的库: {}", path.display()),
-            );
             classpath.push(path);
         } else {
             missing.push(file.relative_path);
         }
     }
+
+    // 逐条 emit 会让启动瞬间刷出几十上百个 IPC 事件，前端要跟着做同样多次 DOM 追加。
+    // 这里汇总成一条：真正的诊断价值在「总数 + 缺失项」，不在逐行清单
+    emit(
+        "log-debug",
+        format!("Classpath 就绪：{} 个库文件", classpath.len()),
+    );
 
     // 缺库必须当场说：静默丢进 classpath 只会在很久之后变成一个 NoClassDefFoundError
     if !missing.is_empty() {

@@ -1,6 +1,6 @@
 [package]
 name = "ar1s_launcher"
-version = "0.8.5"
+version = "0.8.6"
 description = "Ar1s Launcher"
 authors = ["JDBeWL"]
 edition = "2024"
@@ -43,6 +43,11 @@ sysinfo = "0.39"
 num_cpus = "1.17"
 opener = "0.9"
 tempfile = "3"
+
+# 只用来枚举盘符与判断驱动器类型：对 A..Z 逐个 exists() 时，
+# 遇到已断开的网络映射盘会卡住十几秒
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 

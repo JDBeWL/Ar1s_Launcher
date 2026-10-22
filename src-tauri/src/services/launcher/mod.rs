@@ -15,15 +15,23 @@ mod version_json;
 use crate::errors::LauncherError;
 use crate::models::LaunchOptions;
 use crate::services::config::{
-    acquire_auth_lock, load_config, reload_config_from_disk, set_last_selected_version,
-    update_config, update_instance_last_played,
+    acquire_auth_lock, load_config, reload_config_from_disk, update_config,
 };
 use crate::services::memory::{is_memory_setting_safe, optimize_jvm_memory_args, plan_auto_memory};
 use crate::utils::file_utils;
 use log::{info, warn};
+use std::path::PathBuf;
 use tauri::Emitter;
 
 pub use classpath::find_library_jar;
+
+/// 毫秒时间戳，与 config::update_instance_last_played 用的是同一套口径
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 pub async fn launch_minecraft(
     options: LaunchOptions,
@@ -118,15 +126,21 @@ pub async fn launch_minecraft(
     } else {
         java::generate_offline_uuid(&options.username)
     };
+
+    // 用户名、UUID、上次启动时间与「上次选择的版本」都在同一个配置文件里。
+    // 以前分三次 update_config，等于三次整文件读盘 + 三次全量写 + 三次 icacls 派生，
+    // 冷启动白等上百毫秒；这里合成一次读改写
+    let launch_stamp = now_millis();
     update_config(|config| {
         config.username = Some(options.username.clone());
         config.uuid = Some(uuid.clone());
+        config
+            .instance_last_played
+            .insert(options.version.clone(), launch_stamp);
+        config.last_selected_version = Some(options.version.clone());
         Ok(())
     })?;
     let config = (*load_config()?).clone();
-
-    let _ = update_instance_last_played(&options.version);
-    let _ = set_last_selected_version(&options.version);
 
     let game_dir = java::resolve_game_dir(&config.game_dir);
     let version_dir = file_utils::version_dir(&game_dir.join("versions"), &options.version)?;
@@ -155,7 +169,16 @@ pub async fn launch_minecraft(
     emit("log-debug", format!("尝试启动版本: {}", options.version));
     emit("log-debug", format!("游戏目录: {}", game_dir.display()));
 
-    let version_json = version_json::load_and_merge_version_json(&game_dir, &options.version)?;
+    // 版本 JSON 要沿 inheritsFrom 递归读盘解析，是纯同步活
+    let version_json = {
+        let game_dir_clone = game_dir.clone();
+        let version = options.version.clone();
+        tokio::task::spawn_blocking(move || {
+            version_json::load_and_merge_version_json(&game_dir_clone, &version)
+        })
+        .await
+        .map_err(|e| LauncherError::Custom(format!("读取版本 JSON 任务异常终止: {}", e)))??
+    };
 
     let libraries_base_dir = game_dir.join("libraries");
     let assets_base_dir = game_dir.join("assets");
@@ -223,41 +246,98 @@ pub async fn launch_minecraft(
         &version_dir,
         &libraries_base_dir,
         current_os,
-        &emit,
-    )?;
+        &window,
+    )
+    .await?;
 
-    let mut classpath = classpath::build_classpath(
-        &version_json,
-        &libraries_base_dir,
-        &version_dir,
-        &options.version,
-        &emit,
-    )?;
+    // classpath 要为每个库 stat 一次，LaunchWrapper 预检还会整树递归找 jar，同样是同步活
+    let (classpath, main_class) = {
+        let version_json = version_json.clone();
+        let libraries_base_dir = libraries_base_dir.clone();
+        let version_dir = version_dir.clone();
+        let version = options.version.clone();
+        let window = window.clone();
+        tokio::task::spawn_blocking(move || -> Result<(Vec<PathBuf>, String), LauncherError> {
+            let emit = |event: &str, msg: String| {
+                let _ = tauri::Emitter::emit(&window, event, msg);
+            };
+            let mut classpath = classpath::build_classpath(
+                &version_json,
+                &libraries_base_dir,
+                &version_dir,
+                &version,
+                &emit,
+            )?;
 
-    let main_class = version_json["mainClass"]
-        .as_str()
-        .ok_or_else(|| LauncherError::Custom("无法在json中找到mainClass".to_string()))?;
+            let main_class = version_json["mainClass"]
+                .as_str()
+                .ok_or_else(|| LauncherError::Custom("无法在json中找到mainClass".to_string()))?
+                .to_string();
 
-    if main_class == "net.minecraft.launchwrapper.Launch" {
-        classpath::precheck_launchwrapper_libraries(&mut classpath, &libraries_base_dir, &emit)?;
-    }
+            if main_class == "net.minecraft.launchwrapper.Launch" {
+                classpath::precheck_launchwrapper_libraries(
+                    &mut classpath,
+                    &libraries_base_dir,
+                    &emit,
+                )?;
+            }
+
+            Ok((classpath, main_class))
+        })
+        .await
+        .map_err(|e| LauncherError::Custom(format!("构建 classpath 任务异常终止: {}", e)))??
+    };
+
+    let main_class = main_class.as_str();
 
     let assets_index = version_json["assetIndex"]["id"]
         .as_str()
         .unwrap_or(&options.version);
 
-    let (jvm_args, game_args_vec) = arguments::build_arguments(
-        &version_json,
-        &config,
-        &options,
-        &uuid,
-        &version_dir,
-        &game_dir,
-        &assets_base_dir,
-        assets_index,
-        &classpath,
-        &emit,
-    );
+    // build_arguments 会打开多个 jar 判 F3 实现、读 classpath 文件，也是同步活
+    let (jvm_args, game_args_vec) = {
+        let version_json = version_json.clone();
+        let config = config.clone();
+        let options_clone = LaunchOptions {
+            version: options.version.clone(),
+            username: options.username.clone(),
+            memory: options.memory,
+            window_width: options.window_width,
+            window_height: options.window_height,
+            fullscreen: options.fullscreen,
+            auth_type: options.auth_type.clone(),
+            access_token: options.access_token.clone(),
+            uuid: options.uuid.clone(),
+            override_java_path: options.override_java_path.clone(),
+            force_java_mismatch: options.force_java_mismatch,
+        };
+        let uuid = uuid.clone();
+        let version_dir = version_dir.clone();
+        let game_dir = game_dir.clone();
+        let assets_base_dir = assets_base_dir.clone();
+        let assets_index = assets_index.to_string();
+        let classpath = classpath.clone();
+        let window = window.clone();
+        tokio::task::spawn_blocking(move || {
+            let emit = |event: &str, msg: String| {
+                let _ = tauri::Emitter::emit(&window, event, msg);
+            };
+            arguments::build_arguments(
+                &version_json,
+                &config,
+                &options_clone,
+                &uuid,
+                &version_dir,
+                &game_dir,
+                &assets_base_dir,
+                &assets_index,
+                &classpath,
+                &emit,
+            )
+        })
+        .await
+        .map_err(|e| LauncherError::Custom(format!("构建启动参数任务异常终止: {}", e)))?
+    };
 
     let profile = java::profile_for(&options.version, &game_dir);
 

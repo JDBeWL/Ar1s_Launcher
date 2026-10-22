@@ -280,6 +280,10 @@ fn sha1_index_with(
 }
 
 /// 边写边算：下载时每块数据顺手进哈希，写完不必再把整个文件读一遍
+///
+/// `Clone` 用于续传前缀缓存：把「算到某个长度」的哈希器状态存下来，
+/// 重试时从那个点接着算，而不是把前缀整个重读一遍
+#[derive(Clone)]
 pub struct FileHasher {
     hasher: Sha1,
 }

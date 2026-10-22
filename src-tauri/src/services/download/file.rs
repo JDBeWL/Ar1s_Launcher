@@ -15,7 +15,13 @@ use log::{debug, warn};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
+
+/// 写盘缓冲
+///
+/// `tokio::fs::File` 的每次写都是一次独立的阻塞池派发，而 reqwest 的 chunk 通常只有
+/// 8–16 KB：一个 100 MB 的文件就是上万次线程池往返。攒到 256 KB 再落盘，派发次数降两个数量级
+const WRITE_BUFFER_BYTES: usize = 256 * 1024;
 
 /// 两个源各发一次请求做竞速的起跳体积
 ///
@@ -165,6 +171,7 @@ async fn download_with_resume(
     let existing_size = if direct {
         // 直写模式下目标文件就是写一半的产物，不能当续传依据
         let _ = tokio::fs::remove_file(&tmp_path).await;
+        forget_prefix(&tmp_path);
         0
     } else {
         tokio::fs::metadata(&tmp_path)
@@ -196,6 +203,7 @@ async fn download_with_resume(
         }
         warn!("Part file corrupted, restarting download");
         let _ = tokio::fs::remove_file(&tmp_path).await;
+        forget_prefix(&tmp_path);
     }
 
     // 不做 HEAD 预检，直接发 Range；返回 200（不支持 Range）由 download_chunk_with_resume 兜底
@@ -456,13 +464,16 @@ async fn download_chunk_with_resume(
 
         // 服务端不认 Range 时从头写，之前那半截作废
         if resume.is_none() && resume_from.is_some() {
+            // 先刷掉缓冲再丢弃：里面可能还有上一次请求写进去的字节
+            let _ = file.flush().await;
             drop(file);
-            file = tokio::fs::OpenOptions::new()
+            let raw = tokio::fs::OpenOptions::new()
                 .create(true)
                 .write(true)
                 .truncate(true)
                 .open(&tmp_path)
                 .await?;
+            file = BufWriter::with_capacity(WRITE_BUFFER_BYTES, raw);
             hasher = FileHasher::new();
         }
 
@@ -484,6 +495,7 @@ async fn download_chunk_with_resume(
             bytes_added_this_attempt += len;
         }
 
+        // 必须先把缓冲刷进文件，verify_downloaded 会去 stat / 重读它
         file.flush().await?;
         drop(file);
 
@@ -493,6 +505,7 @@ async fn download_chunk_with_resume(
         if !direct {
             finalize_download(&tmp_path, &job.path).await?;
         }
+        forget_prefix(&tmp_path);
         remember_fingerprint(&job.path, job.hash.as_deref(), actual_hash.as_deref());
         debug!("下载完成: {}", stream_url);
 
@@ -625,11 +638,13 @@ async fn download_multipart(
 
     if unsupported {
         let _ = tokio::fs::remove_file(&tmp_path).await;
+        forget_prefix(&tmp_path);
         return Ok(false);
     }
 
     if let Some(e) = failure {
         let _ = tokio::fs::remove_file(&tmp_path).await;
+        forget_prefix(&tmp_path);
         return Err(e);
     }
 
@@ -646,6 +661,7 @@ async fn download_multipart(
 
     if !valid {
         let _ = tokio::fs::remove_file(&tmp_path).await;
+        forget_prefix(&tmp_path);
         return Err(LauncherError::Custom(format!(
             "File verification failed for {}: segment download mismatched (corrupted file deleted).",
             tmp_path.display()
@@ -653,6 +669,7 @@ async fn download_multipart(
     }
 
     finalize_download(&tmp_path, &job.path).await?;
+    forget_prefix(&tmp_path);
     // 内容哈希由 verify_file 自己写进缓存（它已经整文件读过一遍算过了），这里只补期望值
     remember_fingerprint(&job.path, job.hash.as_deref(), None);
 
@@ -714,11 +731,13 @@ async fn download_segment(
         });
     }
 
-    let mut file = tokio::fs::OpenOptions::new()
+    let mut raw = tokio::fs::OpenOptions::new()
         .write(true)
         .open(&path)
         .await?;
-    file.seek(std::io::SeekFrom::Start(start)).await?;
+    raw.seek(std::io::SeekFrom::Start(start)).await?;
+    // 每段也是逐 chunk 写，同样要攒批；段之间不共享文件句柄，缓冲各算各的
+    let mut file = BufWriter::with_capacity(WRITE_BUFFER_BYTES, raw);
 
     let expected = end - start + 1;
     let mut written: u64 = 0;
@@ -726,6 +745,8 @@ async fn download_segment(
 
     while let Some(chunk) = response.chunk().await? {
         if !state.load(Ordering::Acquire) || global_cancel.load(Ordering::Acquire) {
+            // 取消时也要把已收到的部分刷出去，否则这段等于白下
+            let _ = file.flush().await;
             return Err(SegmentError::Fatal(LauncherError::Cancelled));
         }
         file.write_all(&chunk).await?;
@@ -795,10 +816,12 @@ fn remember_fingerprint(path: &Path, expected_hash: Option<&str>, actual_hash: O
 }
 
 /// 续传时把 `.part` 里已有的前缀补算进哈希；首次下载直接给个空哈希器
+///
+/// 返回带缓冲的写入端：调用方必须 `flush` 之后再用文件（校验前一定要先刷出去）
 async fn open_sink(
     tmp_path: &Path,
     resume_from: Option<u64>,
-) -> Result<(tokio::fs::File, FileHasher), LauncherError> {
+) -> Result<(BufWriter<tokio::fs::File>, FileHasher), LauncherError> {
     match resume_from {
         Some(offset) => {
             let mut file = tokio::fs::OpenOptions::new()
@@ -807,7 +830,7 @@ async fn open_sink(
                 .await?;
             file.seek(std::io::SeekFrom::End(0)).await?;
             let hasher = hash_prefix(tmp_path, offset).await?;
-            Ok((file, hasher))
+            Ok((BufWriter::with_capacity(WRITE_BUFFER_BYTES, file), hasher))
         }
         None => {
             let file = tokio::fs::OpenOptions::new()
@@ -816,7 +839,10 @@ async fn open_sink(
                 .truncate(true)
                 .open(tmp_path)
                 .await?;
-            Ok((file, FileHasher::new()))
+            Ok((
+                BufWriter::with_capacity(WRITE_BUFFER_BYTES, file),
+                FileHasher::new(),
+            ))
         }
     }
 }
@@ -825,12 +851,25 @@ async fn open_sink(
 ///
 /// 只有真正中断过的文件才会走这里，读盘量等于上次已下载的量；不补算的话
 /// 续传完成后的 sha1 必然对不上，等于白下。
+///
+/// 重试会把这里重复跑很多遍（batch 最多 5 次、整合包 3 次），所以先查进程内缓存：
+/// 同一个 `.part` 上次算到哪个长度、当时的哈希器状态，都记下来直接接着用。
+/// 缓存命中要求「文件长度没变过」，长度一变说明中途又写了新数据，只能重算
 async fn hash_prefix(path: &Path, bytes: u64) -> Result<FileHasher, LauncherError> {
-    use std::io::Read;
+    if let Some(hasher) = cached_prefix(path, bytes) {
+        debug!(
+            "复用续传前缀哈希: {} 前 {} 字节（跳过重读）",
+            path.display(),
+            bytes
+        );
+        return Ok(hasher);
+    }
 
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || -> Result<FileHasher, LauncherError> {
-        let mut file = std::fs::File::open(&path)?;
+    let path_buf = path.to_path_buf();
+    let hasher = tokio::task::spawn_blocking(move || -> Result<FileHasher, LauncherError> {
+        use std::io::Read;
+
+        let mut file = std::fs::File::open(&path_buf)?;
         let mut hasher = FileHasher::new();
         let mut remaining = bytes;
         let mut buf = vec![0u8; 1024 * 1024];
@@ -846,7 +885,45 @@ async fn hash_prefix(path: &Path, bytes: u64) -> Result<FileHasher, LauncherErro
         Ok(hasher)
     })
     .await
-    .map_err(|e| LauncherError::Custom(format!("计算续传前缀哈希失败: {}", e)))?
+    .map_err(|e| LauncherError::Custom(format!("计算续传前缀哈希失败: {}", e)))??;
+
+    remember_prefix(path, bytes, &hasher);
+    Ok(hasher)
+}
+
+/// 续传前缀哈希的进程内缓存：路径 -> (已算长度, 该长度处的哈希器状态)
+///
+/// 只用来省重试时的重读，丢了不影响正确性（下次重算一遍即可）。
+/// 键里带上文件长度做校验，防止同一个 .part 被写入更多数据后仍命中旧状态
+static PREFIX_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, FileHasher)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// 缓存条目上限：同时下载的文件数不会太多，超了就整体丢弃，维护 LRU 不划算
+const PREFIX_CACHE_MAX: usize = 64;
+
+fn cached_prefix(path: &Path, bytes: u64) -> Option<FileHasher> {
+    let cache = PREFIX_CACHE.lock().ok()?;
+    let (cached_len, hasher) = cache.get(path)?;
+    // 长度必须完全一致：短了状态不够用，长了说明这份状态已经过期
+    (*cached_len == bytes).then(|| hasher.clone())
+}
+
+fn remember_prefix(path: &Path, bytes: u64, hasher: &FileHasher) {
+    let Ok(mut cache) = PREFIX_CACHE.lock() else {
+        return;
+    };
+    if cache.len() >= PREFIX_CACHE_MAX && !cache.contains_key(path) {
+        cache.clear();
+    }
+    cache.insert(path.to_path_buf(), (bytes, hasher.clone()));
+}
+
+/// 下载完成或放弃时清掉缓存，避免把已经删掉的 .part 的状态留在内存里
+fn forget_prefix(path: &Path) {
+    if let Ok(mut cache) = PREFIX_CACHE.lock() {
+        cache.remove(path);
+    }
 }
 
 fn validate_content_type(response: &reqwest::Response, url: &str) -> Result<(), LauncherError> {
@@ -908,7 +985,8 @@ async fn finalize_download(tmp_path: &Path, final_path: &Path) -> Result<(), Lau
 mod tests {
     use super::{
         DIRECT_WRITE_LIMIT, MULTIPART_MAX_SEGMENTS, MULTIPART_MIN_BYTES, RACE_MIN_BYTES,
-        download_file, is_small_file, multipart_segments, part_path, segment_ranges,
+        cached_prefix, download_file, forget_prefix, hash_prefix, is_small_file,
+        multipart_segments, part_path, remember_prefix, segment_ranges,
     };
     use crate::models::DownloadJob;
     use crate::utils::file_utils::FileHasher;
@@ -960,6 +1038,60 @@ mod tests {
             hasher.finish_hex(),
             crate::utils::file_utils::sha1_hex(&data)
         );
+    }
+
+    /// 续传重试时复用缓存的前缀状态，算出来的哈希必须和重新读一遍完全一致；
+    /// 长度对不上时必须拒绝命中，否则会拿半截状态去校验完整文件
+    #[tokio::test]
+    async fn test_prefix_hash_cache_round_trips_and_rejects_wrong_length() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("a.jar.part");
+        let data: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+
+        // 首次：没有缓存，真读一遍
+        let first = hash_prefix(&path, 2048).await.unwrap();
+        assert_eq!(
+            first.finish_hex(),
+            crate::utils::file_utils::sha1_hex(&data[..2048])
+        );
+
+        // 第二次：应当命中缓存，结果一致
+        let second = hash_prefix(&path, 2048).await.unwrap();
+        assert_eq!(
+            second.finish_hex(),
+            crate::utils::file_utils::sha1_hex(&data[..2048])
+        );
+        assert!(cached_prefix(&path, 2048).is_some());
+
+        // 长度不同不能命中，否则会把「算到 2048」的状态当成 4096 的
+        assert!(cached_prefix(&path, 4096).is_none());
+
+        forget_prefix(&path);
+        assert!(cached_prefix(&path, 2048).is_none());
+    }
+
+    /// 缓存只影响重试时的读盘量，算出来的哈希必须与直接算一致
+    #[test]
+    fn test_cached_prefix_hasher_clone_is_independent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("b.part");
+        std::fs::write(&path, b"0123456789").unwrap();
+
+        let mut base = FileHasher::new();
+        base.update(b"0123456789");
+        remember_prefix(&path, 10, &base);
+
+        // 拿到缓存后继续 update，不能反过来污染缓存里的那份状态
+        let mut resumed = cached_prefix(&path, 10).unwrap();
+        resumed.update(b"extra");
+
+        let again = cached_prefix(&path, 10).unwrap();
+        assert_eq!(
+            again.finish_hex(),
+            crate::utils::file_utils::sha1_hex(b"0123456789")
+        );
+        forget_prefix(&path);
     }
 
     /// 段数随体积增长但有上限，小于起跳阈值时不切

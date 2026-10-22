@@ -10,7 +10,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
+  # ---------------------------------------------------------------- 前端
+  # 前端产物与平台无关，只跑一次；Windows 是主要测试平台，放在这里
+  frontend:
+    name: Frontend
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +27,23 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - run: pnpm install --frozen-lockfile
+
+      # 版本号在 package.json / Cargo.toml / tauri.conf.json / README 里各有一份，
+      # 手工同步必然漂移（badge 曾停在 0.7.2），这里以 package.json 为准做校验
+      - run: pnpm version:check
+      - run: pnpm type-check
+      - run: pnpm test
+      - run: pnpm format:check
+
+  # ---------------------------------------------------------------- 后端
+  # Windows 上跑完整检查（fmt / clippy / 测试）
+  backend-windows:
+    name: Backend (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -31,12 +51,44 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: windows
 
-      - run: pnpm install --frozen-lockfile
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 
-      - run: pnpm type-check
-      - run: pnpm test
-      - run: pnpm format:check
+  # 代码里有大量 #[cfg(unix)] / #[cfg(windows)] 分支（file_lock、secure_file、java 扫描）。
+  # 只在 Windows 上跑，Linux 那半永远没人编译，改了也不知道什么时候坏。
+  # Linux 上跑 fmt / clippy / 测试，能把 unix 分支真正编译一遍并跑通
+  backend-linux:
+    name: Backend (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri 2 在 Linux 上的系统依赖：WebKitGTK 与 GTK 开发头文件，
+      # 以及 rfd（文件对话框）用到的 xdg-desktop-portal
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            pkg-config \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: linux
 
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

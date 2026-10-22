@@ -15,7 +15,7 @@ use crate::utils::file_utils::{
 use log::{info, warn};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -236,7 +236,16 @@ pub async fn create_instance(
 
     send_progress(30, "复制基础文件...", false);
 
-    if let Err(e) = file_utils::copy_dir_all(&source_dir, &dest_dir) {
+    // 递归拷贝整个版本目录（可能几百 MB）是纯同步活，留在 async worker 上会把
+    // 这段时间里其他命令一起拖住
+    let copy_result = {
+        let source_dir = source_dir.clone();
+        let dest_dir = dest_dir.clone();
+        tokio::task::spawn_blocking(move || file_utils::copy_dir_all(&source_dir, &dest_dir))
+            .await
+            .map_err(|e| LauncherError::Custom(format!("复制任务异常终止: {}", e)))?
+    };
+    if let Err(e) = copy_result {
         cleanup();
         return Err(e.into());
     }
@@ -645,6 +654,10 @@ fn get_instances_sync(
         .map(|cfg| cfg.instance_last_played.clone())
         .unwrap_or_default();
 
+    // 关闭隔离时所有实例共用根目录的 mods，逐个实例重扫一遍是纯浪费：
+    // 20 个实例 × 500 个模组 = 1 万次完全重复的遍历与 PathBuf 分配，结果还都一样
+    let mut mod_count_cache: HashMap<PathBuf, Option<u32>> = HashMap::new();
+
     if let Ok(entries) = fs::read_dir(versions_dir) {
         for entry in entries.flatten() {
             if let Ok(file_type) = entry.file_type()
@@ -666,7 +679,9 @@ fn get_instances_sync(
                         .unwrap_or_else(|| name.clone());
 
                     let content_dir = if isolated { &path } else { &shared_root };
-                    let mod_count = count_mods(content_dir);
+                    let mod_count = *mod_count_cache
+                        .entry(content_dir.clone())
+                        .or_insert_with(|| count_mods(content_dir));
 
                     let main_class = json_value
                         .as_ref()
@@ -839,14 +854,14 @@ fn count_mods(content_dir: &Path) -> Option<u32> {
     if !mods_dir.is_dir() {
         return None;
     }
+    // 只取文件名判后缀：`e.path()` 会为每个条目分配一个 PathBuf，几百个模组就是几百次纯浪费
     let count = fs::read_dir(&mods_dir)
         .ok()?
         .filter_map(|e| e.ok())
         .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "jar")
-                .unwrap_or(false)
+            e.file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(".jar"))
         })
         .count() as u32;
     if count == 0 { None } else { Some(count) }
@@ -899,7 +914,82 @@ fn resolve_mod_path(
 }
 
 /// 从 jar 里读模组名和版本。Fabric / Quilt 走 JSON，Forge / NeoForge 走 mods.toml
+///
+/// 每次读都要打开 jar 并解析中央目录，几百个模组时进一次实例页就是几百次打开。
+/// 元数据只跟文件内容有关，用「长度 + 修改时间」判重就够了：指纹没变直接返回上次结果
 fn read_mod_metadata(path: &Path) -> (Option<String>, Option<String>) {
+    let meta = match fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(_) => return (None, None),
+    };
+    let modified = meta.modified().ok();
+    let len = meta.len();
+
+    if let Some(cached) = cached_mod_metadata(path, len, modified) {
+        return cached;
+    }
+
+    let resolved = read_mod_metadata_uncached(path);
+    remember_mod_metadata(path, len, modified, &resolved);
+    resolved
+}
+
+/// 一个模组的展示名与版本
+type ModMetadata = (Option<String>, Option<String>);
+
+/// 缓存条目：文件指纹（长度 + 修改时间）与当时读到的元数据
+struct CachedModMetadata {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    name: Option<String>,
+    version: Option<String>,
+}
+
+/// 模组元数据缓存：路径 -> 指纹与元数据
+///
+/// 只省重复的 zip 解析，命中与否都不影响结果；指纹对不上就重读一遍
+static MOD_METADATA_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<PathBuf, CachedModMetadata>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// 条目上限：一个实例的模组数远小于这个值，超了说明换过很多次实例，整体丢弃即可
+const MOD_METADATA_CACHE_MAX: usize = 4096;
+
+fn cached_mod_metadata(
+    path: &Path,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+) -> Option<ModMetadata> {
+    let cache = MOD_METADATA_CACHE.lock().ok()?;
+    let entry = cache.get(path)?;
+    (entry.len == len && entry.modified == modified)
+        .then(|| (entry.name.clone(), entry.version.clone()))
+}
+
+fn remember_mod_metadata(
+    path: &Path,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    value: &ModMetadata,
+) {
+    let Ok(mut cache) = MOD_METADATA_CACHE.lock() else {
+        return;
+    };
+    if cache.len() >= MOD_METADATA_CACHE_MAX && !cache.contains_key(path) {
+        cache.clear();
+    }
+    cache.insert(
+        path.to_path_buf(),
+        CachedModMetadata {
+            len,
+            modified,
+            name: value.0.clone(),
+            version: value.1.clone(),
+        },
+    );
+}
+
+fn read_mod_metadata_uncached(path: &Path) -> ModMetadata {
     let file = match fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return (None, None),
@@ -1139,11 +1229,9 @@ pub fn get_instance_mods(instance_name: String) -> Result<Vec<ModInfo>, Launcher
         });
     }
 
-    mods.sort_by(|a, b| {
-        a.display_name
-            .to_lowercase()
-            .cmp(&b.display_name.to_lowercase())
-    });
+    // 比较器里每次都 to_lowercase 会为大列表分配上万个临时 String；
+    // sort_by_cached_key 只算一次小写键
+    mods.sort_by_cached_key(|m| m.display_name.to_lowercase());
     Ok(mods)
 }
 

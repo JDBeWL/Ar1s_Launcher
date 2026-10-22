@@ -496,18 +496,49 @@ fn get_java_installation_dirs() -> Vec<PathBuf> {
     dirs.into_iter().filter(|dir| dir.exists()).collect()
 }
 
+/// 枚举有盘的盘符
+///
+/// 不能对 A..Z 逐个 `exists()`：插着空光驱、或有已断开的网络映射盘（SMB 超时）时，
+/// 单次探测可能卡数秒到十几秒。`GetLogicalDrives` 一次系统调用就拿到全部盘符，
+/// 再用 `GetDriveTypeW` 跳过不存在的、以及网络盘（Java 不会装在映射盘上，且探测它最慢）
 #[cfg(target_os = "windows")]
 fn get_windows_drives() -> Vec<char> {
-    let mut drives = Vec::new();
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
 
-    for letter in b'A'..=b'Z' {
-        let drive_path = format!("{}:\\", letter as char);
-        if PathBuf::from(&drive_path).exists() {
-            drives.push(letter as char);
-        }
+    const DRIVE_REMOTE: u32 = 4;
+    const DRIVE_NO_ROOT_DIR: u32 = 1;
+
+    let mask = unsafe { GetLogicalDrives() };
+    if mask == 0 {
+        // 调用失败时退回逐个探测，至少还能找到 Java，只是慢
+        return probe_drives_one_by_one();
     }
 
+    let mut drives = Vec::new();
+    for letter in b'A'..=b'Z' {
+        if mask & (1 << (letter - b'A')) == 0 {
+            continue;
+        }
+        let root: Vec<u16> = format!("{}:\\", letter as char)
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let drive_type = unsafe { GetDriveTypeW(root.as_ptr()) };
+        if drive_type == DRIVE_NO_ROOT_DIR || drive_type == DRIVE_REMOTE {
+            continue;
+        }
+        drives.push(letter as char);
+    }
     drives
+}
+
+/// `GetLogicalDrives` 失败时的兜底；正常不会走到
+#[cfg(target_os = "windows")]
+fn probe_drives_one_by_one() -> Vec<char> {
+    (b'A'..=b'Z')
+        .map(|letter| letter as char)
+        .filter(|letter| PathBuf::from(format!("{}:\\", letter)).exists())
+        .collect()
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -551,8 +582,10 @@ fn find_java_in_directory(dir: &Path) -> Vec<String> {
                         // 某些发行版（如 Eclipse Adoptium）还多一层子目录
                         paths.extend(find_java_in_subdirectory(&entry.path()));
                     }
-                } else {
-                    // Microsoft、Eclipse Adoptium 这类目录名本身不像 Java 目录，需再搜一层
+                } else if is_java_vendor_name(&dir_name) {
+                    // 只有已知发行商的目录才值得再下钻一层。
+                    // 以前是无条件递归，Program Files 下每个无关目录都要 read_dir 一次，
+                    // 乘上盘符数就是几百次无用 IO
                     paths.extend(find_java_in_subdirectory(&entry.path()));
                 }
             }
@@ -560,6 +593,37 @@ fn find_java_in_directory(dir: &Path) -> Vec<String> {
     }
 
     paths
+}
+
+/// 目录名像发行商（而不是像 Java 版本），其下才可能藏着 JDK
+fn is_java_vendor_name(name: &str) -> bool {
+    [
+        "microsoft",
+        "eclipse",
+        "adoptium",
+        "adoptopenjdk",
+        "amazon",
+        "corretto",
+        "zulu",
+        "azul",
+        "bellsoft",
+        "liberica",
+        "redhat",
+        "sapmachine",
+        "graalvm",
+        "openjdk",
+        "temurin",
+        "semeru",
+        "dragonwell",
+        "bisheng",
+        "ibm",
+        "oracle",
+        "java",
+        "jdk",
+        "jre",
+    ]
+    .iter()
+    .any(|vendor| name.contains(vendor))
 }
 
 fn is_java_directory_name(name: &str) -> bool {
@@ -958,10 +1022,54 @@ pub fn auto_detect_java() -> Result<Vec<String>, LauncherError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        JavaArch, JavaProbe, dedup_by_canonical, parse_arch, parse_major, property_value,
-        quoted_version, real_java_exe,
+        JavaArch, JavaProbe, dedup_by_canonical, is_java_vendor_name, parse_arch, parse_major,
+        property_value, quoted_version, real_java_exe,
     };
     use std::fs;
+
+    /// 白名单只决定「要不要再往下钻一层」，漏掉发行商就会少找到一份 Java；
+    /// 这里把常见安装布局里的目录名逐一钉住
+    #[test]
+    fn test_java_vendor_name_covers_common_install_layouts() {
+        for name in [
+            "microsoft",
+            "eclipse adoptium",
+            "eclipse foundation",
+            "amazon corretto",
+            "zulu",
+            "azul zulu",
+            "bellsoft",
+            "liberica",
+            "redhat",
+            "sapmachine",
+            "graalvm",
+            "openjdk",
+            "temurin-21",
+            "ibm",
+            "oracle",
+            "java",
+        ] {
+            assert!(
+                is_java_vendor_name(name),
+                "`{name}` 应当被当成发行商目录继续下钻"
+            );
+        }
+
+        // 无关目录不该触发递归，否则 Program Files 下每个目录都要 read_dir 一次
+        for name in [
+            "windowsapps",
+            "common files",
+            "git",
+            "nodejs",
+            "nvidia corporation",
+            "google",
+        ] {
+            assert!(
+                !is_java_vendor_name(name),
+                "`{name}` 不该被继续下钻，这是纯粹的无用 IO"
+            );
+        }
+    }
 
     #[test]
     fn test_property_value_matches_the_exact_key() {

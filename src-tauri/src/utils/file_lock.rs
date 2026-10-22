@@ -23,14 +23,29 @@ pub struct FileLock {
 
 impl Drop for FileLock {
     fn drop(&mut self) {
-        // 先删文件再关句柄：删除发生在仍持锁的时候，别人不会在我们的删除与重建之间插队。
         // Windows 由 DELETE_ON_CLOSE 负责，这里什么都不用做
         #[cfg(unix)]
-        let _ = std::fs::remove_file(&self.path);
-
-        #[cfg(unix)]
         {
+            // 先解锁，再判断能不能删。
+            //
+            // 不能直接 remove_file：共享锁允许多个持有者，第一个释放时删掉文件，
+            // 其余持有者锁住的就成了一个已删除的 inode，之后新来的排他锁会
+            // 在新建的空文件上成功——互斥直接失效，正在跑的游戏会被当成"没人在跑"。
+            //
+            // 解锁后立刻抢一次排他锁：抢得到说明确实没人了，删掉；
+            // 抢不到说明还有别的持有者，原样留着，等最后一个释放时再删
             let _ = self.file.unlock();
+
+            if let Ok(file) = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&self.path)
+                && file.try_lock().is_ok()
+            {
+                // 仍持有排他锁时删除：删除与重建之间不会有人插队
+                let _ = std::fs::remove_file(&self.path);
+                let _ = file.unlock();
+            }
         }
     }
 }
@@ -312,6 +327,12 @@ mod tests {
     use super::{acquire, acquire_async, acquire_shared};
     use std::time::Duration;
 
+    /// 多个共享持有者可以共存，且**任何一个释放都不能删掉别人的锁文件**
+    ///
+    /// 后半句是 Unix 特有的陷阱：锁挂在 inode 上，第一个持有者一 unlink，
+    /// 其余持有者锁着的就变成一个已删除的 inode，之后新来的排他锁会在
+    /// 新建的空文件上成功——正在跑的游戏会被当成"没人在跑"。
+    /// 这条测试在 Linux CI 上跑才有意义，Windows 靠 DELETE_ON_CLOSE 天然成立
     #[test]
     fn test_multiple_shared_locks_can_coexist() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -326,6 +347,10 @@ mod tests {
         drop(first);
         // 还有共享持有者，锁文件必须继续存在，否则新来的排他锁会以为没人用
         assert!(path.exists(), "还有持有者时锁文件不能消失");
+        assert!(
+            acquire(&path, Duration::from_millis(50)).is_err(),
+            "残留的共享持有者必须继续挡住排他锁"
+        );
 
         drop(second);
         assert!(!path.exists(), "最后一个持有者释放后锁文件必须消失");

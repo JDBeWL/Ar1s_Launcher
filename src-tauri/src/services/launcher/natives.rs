@@ -7,9 +7,53 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub fn extract_natives(
+/// 解压 natives 并返回目录
+///
+/// 锁必须异步获取：`file_lock::acquire` 是 `thread::sleep` 轮询，放在 async fn 里
+/// 会把一个 tokio worker 原地睡满整个超时（另一个实例正在解压时最坏 30 秒），
+/// 期间所有其他 command 一起卡住
+pub async fn extract_natives(
     version_json: &serde_json::Value,
     game_dir: &Path,
+    version_dir: &Path,
+    libraries_base_dir: &Path,
+    current_os: &str,
+    window: &tauri::Window,
+) -> Result<PathBuf, LauncherError> {
+    // 同一实例多开时只能有一个进程在解压，否则第二个进程会读到写了一半的文件。
+    // 锁不能放在实例目录里：Windows 上目录内有打开的文件就重命名不了，
+    // 会挡住删除/重命名实例，所以统一放到游戏目录的锁目录
+    let lock_path = crate::services::instance::lock_dir(game_dir).join("natives.lock");
+    let _natives_lock =
+        crate::utils::file_lock::acquire_async(&lock_path, std::time::Duration::from_secs(30))
+            .await?;
+
+    // 解压本身是纯同步的读盘 + 解压，挪到阻塞线程池，别占 async worker
+    let version_json = version_json.clone();
+    let version_dir = version_dir.to_path_buf();
+    let libraries_base_dir = libraries_base_dir.to_path_buf();
+    let current_os = current_os.to_string();
+    let window = window.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let emit = |event: &str, msg: String| {
+            let _ = tauri::Emitter::emit(&window, event, msg);
+        };
+        extract_natives_sync(
+            &version_json,
+            &version_dir,
+            &libraries_base_dir,
+            &current_os,
+            &emit,
+        )
+    })
+    .await
+    .map_err(|e| LauncherError::Custom(format!("Natives 解压任务异常终止: {}", e)))?
+}
+
+/// 同步解压实现，调用方负责加锁并放进阻塞线程池
+fn extract_natives_sync(
+    version_json: &serde_json::Value,
     version_dir: &Path,
     libraries_base_dir: &Path,
     current_os: &str,
@@ -20,13 +64,6 @@ pub fn extract_natives(
         "log-debug",
         format!("Natives目录: {}", natives_dir.display()),
     );
-
-    // 同一实例多开时只能有一个进程在解压，否则第二个进程会读到写了一半的文件。
-    // 锁不能放在实例目录里：Windows 上目录内有打开的文件就重命名不了，
-    // 会挡住删除/重命名实例，所以统一放到游戏目录的锁目录
-    let lock_path = crate::services::instance::lock_dir(game_dir).join("natives.lock");
-    let _natives_lock =
-        crate::utils::file_lock::acquire(&lock_path, std::time::Duration::from_secs(30))?;
 
     if natives_dir.exists() {
         if fs::read_dir(&natives_dir)
@@ -47,12 +84,12 @@ pub fn extract_natives(
         return Ok(natives_dir);
     };
 
+    let mut extracted = 0usize;
+
     for lib in libraries {
         let Some(natives) = lib.get("natives") else {
             continue;
         };
-
-        emit("log-debug", format!("发现Natives库: {:?}", lib));
 
         let Some(os_classifier) = natives.get(current_os).and_then(|v| v.as_str()) else {
             continue;
@@ -66,14 +103,6 @@ pub fn extract_natives(
         };
         let classifier = os_classifier.replace("${arch}", arch);
 
-        emit(
-            "log-debug",
-            format!(
-                "正在查找的OS分类器: {} (原始: {})",
-                classifier, os_classifier
-            ),
-        );
-
         let Some(artifact) = lib
             .get("downloads")
             .and_then(|d| d.get("classifiers"))
@@ -82,13 +111,7 @@ pub fn extract_natives(
             continue;
         };
 
-        emit("log-debug", format!("Natives Artifact: {:?}", artifact));
-
         let lib_path = libraries_base_dir.join(artifact["path"].as_str().unwrap_or(""));
-        emit(
-            "log-debug",
-            format!("尝试解压Natives库: {}", lib_path.display()),
-        );
 
         if !lib_path.exists() {
             emit(
@@ -101,9 +124,21 @@ pub fn extract_natives(
             )));
         }
 
-        extract_native_jar(&lib_path, &natives_dir, lib, emit)?;
-        log_natives_dir_contents(&natives_dir, emit);
+        extract_native_jar(&lib_path, &natives_dir, lib)?;
+        extracted += 1;
     }
+
+    // 逐库、逐条 emit 会在启动瞬间刷出上百个 IPC 事件；汇总成一条，
+    // 排障需要的「解压了几个库 / 目录里有什么」都还在
+    emit(
+        "log-debug",
+        format!(
+            "Natives 解压完成：{} 个库 -> {}",
+            extracted,
+            natives_dir.display()
+        ),
+    );
+    log_natives_dir_contents(&natives_dir, emit);
 
     Ok(natives_dir)
 }
@@ -112,7 +147,6 @@ fn extract_native_jar(
     lib_path: &Path,
     natives_dir: &Path,
     lib: &serde_json::Value,
-    emit: &impl Fn(&str, String),
 ) -> Result<(), LauncherError> {
     let file = fs::File::open(lib_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
@@ -145,11 +179,6 @@ fn extract_native_jar(
 
         let mut outfile = fs::File::create(&outpath)?;
         io::copy(&mut file, &mut outfile)?;
-
-        emit(
-            "log-debug",
-            format!("解压Natives文件: {} -> {}", entry_name, outpath.display()),
-        );
     }
 
     Ok(())

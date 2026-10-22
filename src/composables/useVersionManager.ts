@@ -2,7 +2,7 @@
  * 已安装版本管理
  * 读取游戏目录里的已安装版本，未选中时优先恢复上次选择
  */
-import { ref } from 'vue';
+import { ref, onScopeDispose } from 'vue';
 import { useEventSubscription } from './useEventSubscription';
 import { configApi } from '../services';
 import { logError } from '../utils/logger';
@@ -12,6 +12,8 @@ export function useVersionManager() {
   const selectedVersion = ref('');
   const loading = ref(false);
   const gameDir = ref('');
+  // initListeners 是幂等的：HomeView 与 DownloadView 都会调用，重复挂载会叠加监听
+  let focusListening = false;
 
   const eventSub = useEventSubscription<string>('game-dir-changed', (event) => {
     gameDir.value = event.payload;
@@ -53,13 +55,23 @@ export function useVersionManager() {
   async function initListeners() {
     await eventSub.subscribe();
     // 另一个实例可能刚创建/删除了版本；切回窗口时重新扫一遍目录
-    window.addEventListener('focus', loadGameDir);
+    if (!focusListening) {
+      window.addEventListener('focus', loadGameDir);
+      focusListening = true;
+    }
   }
 
   function cleanup() {
     eventSub.unsubscribe();
-    window.removeEventListener('focus', loadGameDir);
+    if (focusListening) {
+      window.removeEventListener('focus', loadGameDir);
+      focusListening = false;
+    }
   }
+
+  // 组件卸载时自动清理：以前只有手动调用 cleanup 才移除监听，而没有任何调用方调它，
+  // 于是在 Home 与下载页之间来回切换会不断叠加 focus 监听，每次切回窗口都触发多次 IPC
+  onScopeDispose(cleanup);
 
   return {
     installedVersions,
