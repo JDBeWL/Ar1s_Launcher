@@ -15,7 +15,7 @@ mod version_json;
 use crate::errors::LauncherError;
 use crate::models::LaunchOptions;
 use crate::services::config::{
-    acquire_auth_lock, load_config, reload_config_from_disk, update_config,
+    acquire_auth_lock, load_config, reload_config_from_disk, update_config_async,
 };
 use crate::services::memory::{is_memory_setting_safe, optimize_jvm_memory_args, plan_auto_memory};
 use crate::utils::file_utils;
@@ -75,20 +75,24 @@ pub async fn launch_minecraft(
                     {
                         Ok(auth_result) => {
                             // 网络请求期间另一个实例可能已经刷新过；token 变了就不要覆盖
-                            let applied = update_config(|save_cfg| {
-                                if save_cfg.ms_refresh_token.as_deref()
-                                    != Some(refresh_token.as_str())
-                                {
-                                    return Ok(false);
+                            let applied = update_config_async({
+                                let auth = auth_result.clone();
+                                move |save_cfg| {
+                                    if save_cfg.ms_refresh_token.as_deref()
+                                        != Some(refresh_token.as_str())
+                                    {
+                                        return Ok(false);
+                                    }
+                                    save_cfg.ms_access_token = Some(auth.access_token.clone());
+                                    save_cfg.ms_refresh_token = Some(auth.refresh_token.clone());
+                                    save_cfg.ms_expires_at = Some(auth.expires_at);
+                                    save_cfg.username = Some(auth.username.clone());
+                                    save_cfg.uuid = Some(auth.uuid.clone());
+                                    save_cfg.skin_url = auth.skin_url.clone();
+                                    Ok(true)
                                 }
-                                save_cfg.ms_access_token = Some(auth_result.access_token.clone());
-                                save_cfg.ms_refresh_token = Some(auth_result.refresh_token.clone());
-                                save_cfg.ms_expires_at = Some(auth_result.expires_at);
-                                save_cfg.username = Some(auth_result.username.clone());
-                                save_cfg.uuid = Some(auth_result.uuid.clone());
-                                save_cfg.skin_url = auth_result.skin_url.clone();
-                                Ok(true)
-                            })?;
+                            })
+                            .await?;
 
                             if applied {
                                 options.access_token = Some(auth_result.access_token);
@@ -130,15 +134,19 @@ pub async fn launch_minecraft(
     // 用户名、UUID、上次启动时间与「上次选择的版本」都在同一个配置文件里，
     // 合成一次读改写：分三次 update_config 就是三次整文件读盘 + 三次全量写 + 三次 icacls 派生
     let launch_stamp = now_millis();
-    update_config(|config| {
-        config.username = Some(options.username.clone());
-        config.uuid = Some(uuid.clone());
+    let launch_version = options.version.clone();
+    let launch_username = options.username.clone();
+    let launch_uuid = uuid.clone();
+    update_config_async(move |config| {
+        config.username = Some(launch_username);
+        config.uuid = Some(launch_uuid);
         config
             .instance_last_played
-            .insert(options.version.clone(), launch_stamp);
-        config.last_selected_version = Some(options.version.clone());
+            .insert(launch_version.clone(), launch_stamp);
+        config.last_selected_version = Some(launch_version);
         Ok(())
-    })?;
+    })
+    .await?;
     let config = (*load_config()?).clone();
 
     let game_dir = java::resolve_game_dir(&config.game_dir);

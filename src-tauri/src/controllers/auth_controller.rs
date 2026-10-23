@@ -5,7 +5,7 @@
 use crate::errors::LauncherError;
 use crate::models::AuthType;
 use crate::services::config::{
-    acquire_auth_lock, load_config, reload_config_from_disk, update_config,
+    acquire_auth_lock, load_config, reload_config_from_disk, update_config, update_config_async,
 };
 use crate::services::microsoft_auth;
 use std::sync::Mutex;
@@ -182,16 +182,20 @@ pub async fn complete_microsoft_login() -> Result<MicrosoftLoginResult, Launcher
                 )
                 .await?;
 
-                update_config(|config| {
-                    config.auth_type = AuthType::Microsoft;
-                    config.username = Some(auth_result.username.clone());
-                    config.uuid = Some(auth_result.uuid.clone());
-                    config.skin_url = auth_result.skin_url.clone();
-                    config.ms_access_token = Some(auth_result.access_token.clone());
-                    config.ms_refresh_token = Some(auth_result.refresh_token.clone());
-                    config.ms_expires_at = Some(auth_result.expires_at);
-                    Ok(())
-                })?;
+                update_config_async({
+                    let auth = auth_result.clone();
+                    move |config| {
+                        config.auth_type = AuthType::Microsoft;
+                        config.username = Some(auth.username.clone());
+                        config.uuid = Some(auth.uuid.clone());
+                        config.skin_url = auth.skin_url.clone();
+                        config.ms_access_token = Some(auth.access_token.clone());
+                        config.ms_refresh_token = Some(auth.refresh_token.clone());
+                        config.ms_expires_at = Some(auth.expires_at);
+                        Ok(())
+                    }
+                })
+                .await?;
 
                 return Ok(MicrosoftLoginResult {
                     username: auth_result.username,
@@ -237,10 +241,12 @@ pub async fn refresh_skin_url() -> Result<Option<String>, LauncherError> {
 
     match microsoft_auth::fetch_skin_url(&token).await {
         Ok(skin_url) => {
-            update_config(|config| {
-                config.skin_url = skin_url.clone();
+            let saved_skin = skin_url.clone();
+            update_config_async(move |config| {
+                config.skin_url = saved_skin;
                 Ok(())
-            })?;
+            })
+            .await?;
             Ok(skin_url)
         }
         // 皮肤地址只是装饰，取不到就退回已存的值，不该因此打断启动流程
@@ -281,19 +287,23 @@ pub async fn refresh_microsoft_auth() -> Result<MicrosoftLoginResult, LauncherEr
     let auth_result = microsoft_auth::refresh_and_authenticate(&refresh_token).await?;
 
     // 网络请求期间另一个实例可能已完成登录/刷新；refresh token 变了就不要覆盖
-    let applied = update_config(|config| {
-        if config.ms_refresh_token.as_deref() != Some(refresh_token.as_str()) {
-            return Ok(false);
+    let applied = update_config_async({
+        let auth = auth_result.clone();
+        move |config| {
+            if config.ms_refresh_token.as_deref() != Some(refresh_token.as_str()) {
+                return Ok(false);
+            }
+            config.auth_type = AuthType::Microsoft;
+            config.username = Some(auth.username.clone());
+            config.uuid = Some(auth.uuid.clone());
+            config.skin_url = auth.skin_url.clone();
+            config.ms_access_token = Some(auth.access_token.clone());
+            config.ms_refresh_token = Some(auth.refresh_token.clone());
+            config.ms_expires_at = Some(auth.expires_at);
+            Ok(true)
         }
-        config.auth_type = AuthType::Microsoft;
-        config.username = Some(auth_result.username.clone());
-        config.uuid = Some(auth_result.uuid.clone());
-        config.skin_url = auth_result.skin_url.clone();
-        config.ms_access_token = Some(auth_result.access_token.clone());
-        config.ms_refresh_token = Some(auth_result.refresh_token.clone());
-        config.ms_expires_at = Some(auth_result.expires_at);
-        Ok(true)
-    })?;
+    })
+    .await?;
 
     if applied {
         return Ok(MicrosoftLoginResult {
@@ -327,7 +337,7 @@ pub async fn logout_microsoft() -> Result<(), LauncherError> {
     let _ = microsoft_auth::revoke_microsoft_token().await;
 
     // 清 token 也走 update_config：与另一实例的刷新在同一把配置锁下串行，不会被写回
-    update_config(|config| {
+    update_config_async(|config| {
         config.auth_type = AuthType::Offline;
         config.ms_access_token = None;
         config.ms_refresh_token = None;
@@ -335,6 +345,7 @@ pub async fn logout_microsoft() -> Result<(), LauncherError> {
         config.skin_url = None;
         Ok(())
     })
+    .await
 }
 
 #[tauri::command]
@@ -370,16 +381,20 @@ pub async fn complete_microsoft_auth_code_login() -> Result<MicrosoftLoginResult
         microsoft_auth::complete_auth_code_flow(&flow.code_verifier, &flow.state, &AUTH_CANCELLED)
             .await?;
 
-    update_config(|config| {
-        config.auth_type = AuthType::Microsoft;
-        config.username = Some(auth_result.username.clone());
-        config.uuid = Some(auth_result.uuid.clone());
-        config.skin_url = auth_result.skin_url.clone();
-        config.ms_access_token = Some(auth_result.access_token.clone());
-        config.ms_refresh_token = Some(auth_result.refresh_token.clone());
-        config.ms_expires_at = Some(auth_result.expires_at);
-        Ok(())
-    })?;
+    update_config_async({
+        let auth = auth_result.clone();
+        move |config| {
+            config.auth_type = AuthType::Microsoft;
+            config.username = Some(auth.username.clone());
+            config.uuid = Some(auth.uuid.clone());
+            config.skin_url = auth.skin_url.clone();
+            config.ms_access_token = Some(auth.access_token.clone());
+            config.ms_refresh_token = Some(auth.refresh_token.clone());
+            config.ms_expires_at = Some(auth.expires_at);
+            Ok(())
+        }
+    })
+    .await?;
 
     Ok(MicrosoftLoginResult {
         username: auth_result.username,

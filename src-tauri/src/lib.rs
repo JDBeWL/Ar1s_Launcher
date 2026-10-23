@@ -8,7 +8,7 @@ mod models;
 pub mod services;
 pub mod utils;
 pub use errors::LauncherError;
-pub use services::config::{load_config, save_config, update_config};
+pub use services::config::{load_config, save_config, update_config, update_config_async};
 pub use services::launcher::launch_minecraft;
 use utils::logger::setup_logger;
 

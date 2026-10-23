@@ -1524,14 +1524,18 @@ pub async fn launch_instance(
                         .await
                     {
                         Ok(auth_result) => {
-                            config::update_config(|cfg| {
-                                cfg.ms_access_token = Some(auth_result.access_token.clone());
-                                cfg.ms_refresh_token = Some(auth_result.refresh_token.clone());
-                                cfg.ms_expires_at = Some(auth_result.expires_at);
-                                cfg.username = Some(auth_result.username.clone());
-                                cfg.uuid = Some(auth_result.uuid.clone());
-                                Ok(())
-                            })?;
+                            config::update_config_async({
+                                let auth = auth_result.clone();
+                                move |cfg| {
+                                    cfg.ms_access_token = Some(auth.access_token.clone());
+                                    cfg.ms_refresh_token = Some(auth.refresh_token.clone());
+                                    cfg.ms_expires_at = Some(auth.expires_at);
+                                    cfg.username = Some(auth.username.clone());
+                                    cfg.uuid = Some(auth.uuid.clone());
+                                    Ok(())
+                                }
+                            })
+                            .await?;
 
                             token = Some(auth_result.access_token);
                             info!("Microsoft token 刷新成功");

@@ -433,6 +433,19 @@ where
     Ok(result)
 }
 
+/// update_config 的异步版：跨进程文件锁最多轮询 3 秒，加上整文件重读、全量写回与
+/// 权限收紧全是阻塞操作，async 上下文（启动、登录、刷新 token 等）必须走这里，
+/// 别占住 tokio worker。同步命令（已在主线程/阻塞池上的）仍用 update_config
+pub async fn update_config_async<F, R>(update: F) -> Result<R, LauncherError>
+where
+    F: FnOnce(&mut GameConfig) -> Result<R, LauncherError> + Send + 'static,
+    R: Send + 'static,
+{
+    tokio::task::spawn_blocking(move || update_config(update))
+        .await
+        .map_err(|e| LauncherError::Custom(format!("配置更新任务异常终止: {}", e)))?
+}
+
 fn has_tokens(config: &GameConfig) -> bool {
     config.ms_access_token.is_some() || config.ms_refresh_token.is_some()
 }

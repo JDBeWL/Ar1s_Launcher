@@ -515,6 +515,12 @@ async fn download_chunk_with_resume(
 
     if result.is_err() {
         bytes_downloaded.fetch_sub(bytes_added_this_attempt, Ordering::Relaxed);
+        // 直写模式下 tmp_path 就是最终文件：取消或断连留下的截断/空文件会被启动时的
+        // 存在性检查直接加进 classpath，必须随手删掉（小文件重下代价本来就低，无需续传）
+        if direct {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            forget_prefix(&tmp_path);
+        }
     }
 
     result
