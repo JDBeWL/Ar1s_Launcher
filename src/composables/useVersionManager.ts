@@ -53,7 +53,12 @@ export function useVersionManager() {
   }
 
   async function initListeners() {
-    await eventSub.subscribe();
+    // 订阅失败只记日志：让调用方 onMounted 正常走完，别把页面卡在骨架屏
+    try {
+      await eventSub.subscribe();
+    } catch (err) {
+      logError('Failed to subscribe game-dir-changed', err, 'useVersionManager');
+    }
     // 另一个实例可能刚创建/删除了版本；切回窗口时重新扫一遍目录
     if (!focusListening) {
       window.addEventListener('focus', loadGameDir);

@@ -24,6 +24,12 @@ pub enum LauncherError {
     #[error("另一个启动器实例正在占用 {0}")]
     Busy(String),
     #[error("{0}")]
+    /// 用户在 OAuth 流程里拒绝了授权；前端据此静默，不当错误弹窗
+    AuthDenied(String),
+    #[error("{0}")]
+    /// 设备代码等授权凭据过期；前端据此静默并引导重新发起登录
+    AuthExpired(String),
+    #[error("{0}")]
     Custom(String),
 }
 
@@ -37,6 +43,8 @@ impl LauncherError {
             Self::Tauri(_) => "tauri",
             Self::Cancelled => "cancelled",
             Self::Busy(_) => "busy",
+            Self::AuthDenied(_) => "auth_denied",
+            Self::AuthExpired(_) => "auth_expired",
             Self::Custom(_) => "custom",
         }
     }

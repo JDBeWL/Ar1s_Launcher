@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { VStepperVertical, VStepperVerticalItem } from 'vuetify/components';
 import InstanceAvatar from '../components/instance/InstanceAvatar.vue';
@@ -9,7 +9,6 @@ import { useGameLaunch } from '../composables/useGameLaunch';
 import { useAuthStore } from '../stores/authStore';
 import { instanceApi } from '../services';
 import { formatLastPlayed } from '../utils/format';
-import { useDebounceFn } from '../composables/useDebounce';
 import { logError } from '../utils/logger';
 import type { GameInstance } from '../types/events';
 
@@ -91,19 +90,6 @@ async function loadInstances() {
     instancesLoading.value = false;
   }
 }
-
-const debouncedSaveUsername = useDebounceFn((name: string) => {
-  authStore.saveUsername(name);
-}, 500);
-
-watch(
-  () => authStore.username,
-  (newName) => {
-    if (newName !== null && newName !== undefined) {
-      debouncedSaveUsername.call(newName);
-    }
-  },
-);
 
 async function handleLaunch() {
   const launched = await launchInstance(selectedInstance.value);

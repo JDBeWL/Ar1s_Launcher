@@ -1088,14 +1088,21 @@ async fn manual_install_new_forge(
     let libraries_dir = game_dir.join("libraries");
     let client = http_client::get_client();
 
+    // 新版 Forge 的库下载同样单条失败不致命（pom-only 条目本来就没有 jar），
+    // 但全静默会装出缺件的实例只能靠崩溃日志反推，结尾汇总一条 warn 留排查线索
+    let mut library_failures: Vec<String> = Vec::new();
     if let Some(libs) = profile.get("libraries").and_then(|l| l.as_array()) {
         for lib in libs {
-            let _ = download_library_from_profile(lib, &libraries_dir, &client).await;
+            if let Err(e) = download_library_from_profile(lib, &libraries_dir, &client).await {
+                library_failures.push(e.to_string());
+            }
         }
     }
     if let Some(libs) = version_json.get("libraries").and_then(|l| l.as_array()) {
         for lib in libs {
-            let _ = download_library_from_profile(lib, &libraries_dir, &client).await;
+            if let Err(e) = download_library_from_profile(lib, &libraries_dir, &client).await {
+                library_failures.push(e.to_string());
+            }
         }
     }
 
@@ -1197,6 +1204,17 @@ async fn manual_install_new_forge(
         &version_json_path,
         serde_json::to_string_pretty(&final_version)?,
     )?;
+
+    if !library_failures.is_empty() {
+        // profile 与 version_json 的库列表大面积重叠，去重后再汇总
+        library_failures.sort();
+        library_failures.dedup();
+        warn!(
+            "Forge: 新版手动安装有 {} 个库下载失败，缺件可能导致启动失败: {}",
+            library_failures.len(),
+            library_failures.join("；")
+        );
+    }
 
     info!("Forge: 新版手动安装完成");
     Ok(())

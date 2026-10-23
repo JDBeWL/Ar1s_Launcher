@@ -31,5 +31,6 @@ export default {
     cancelled: 'Download cancelled',
     remaining: 'Remaining',
     downloadingPercent: 'Downloading {percent}%',
+    alreadyRunning: 'A download is already in progress. Please wait for it to finish.',
   },
 };

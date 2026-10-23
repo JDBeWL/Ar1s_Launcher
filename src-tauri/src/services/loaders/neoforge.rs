@@ -8,6 +8,7 @@ use crate::services::config;
 use crate::services::download;
 use crate::services::download::source::{self as download_sources, BMCL_BASE, DownloadSource};
 use crate::services::http_client;
+use crate::utils::file_utils;
 use log::{info, warn};
 use serde_json::Value;
 use std::fs;
@@ -60,6 +61,8 @@ pub async fn install_neoforge(
     let temp_dir = game_dir.join("temp");
     fs::create_dir_all(&temp_dir)?;
     let installer_path = temp_dir.join(format!("neoforge-{}-installer.jar", full_version));
+    // installer 只是安装过程的原料，成功失败都用不着；失败路径也清掉，别在 temp 里攒几十 MB 的 jar
+    let _installer_guard = file_utils::TempPathGuard(installer_path.clone());
 
     let installer_url = format!(
         "{}/net/neoforged/neoforge/{}/neoforge-{}-installer.jar",
@@ -217,8 +220,6 @@ pub async fn install_neoforge(
     fs::write(&json_path, serde_json::to_string_pretty(&final_version)?)?;
 
     info!("NeoForge 版本 JSON 已创建: {}", json_path.display());
-
-    let _ = fs::remove_file(&installer_path);
 
     Ok(())
 }

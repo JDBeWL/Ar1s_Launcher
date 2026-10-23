@@ -59,9 +59,7 @@ export const useAuthStore = defineStore('auth', () => {
       msExpiresAt.value = result.expiresAt;
       msLoggedIn.value = true;
     } catch {
-      if (!msLoggedIn.value) {
-        msLoggedIn.value = false;
-      }
+      // 刷新失败不改变登录态：token 是否真的过期由 isTokenExpired 按过期时间判断
     }
   }
 

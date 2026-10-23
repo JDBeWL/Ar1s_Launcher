@@ -411,27 +411,38 @@ impl ModpackInstaller {
             .then_some(primary_file.hashes.sha1.as_str());
         let cancel_flag = get_cancel_flag();
 
-        self.modrinth_service
-            .download_modpack_file(
-                &primary_file.url,
-                &archive_path,
-                primary_file.size,
-                sha1,
-                &cancel_flag,
-            )
-            .await
-            .map_err(|e| {
-                if e.is_cancelled() {
-                    LauncherError::Cancelled
-                } else {
-                    LauncherError::Custom(format!("下载整合包文件失败: {}", e))
-                }
-            })?;
+        let index_result = async {
+            self.modrinth_service
+                .download_modpack_file(
+                    &primary_file.url,
+                    &archive_path,
+                    primary_file.size,
+                    sha1,
+                    &cancel_flag,
+                )
+                .await
+                .map_err(|e| {
+                    if e.is_cancelled() {
+                        LauncherError::Cancelled
+                    } else {
+                        LauncherError::Custom(format!("下载整合包文件失败: {}", e))
+                    }
+                })?;
 
-        send_progress(30, "读取整合包清单...", false);
-        check_cancelled()?;
+            send_progress(30, "读取整合包清单...", false);
+            check_cancelled()?;
 
-        let index = read_archive_index(&archive_path).await?;
+            read_archive_index(&archive_path).await
+        }
+        .await;
+
+        // 半截包或坏包留在 temp 只会占盘（成功路径的清理由 remove_archive_after 负责）；
+        // 清理失败不用阻断错误上报
+        if index_result.is_err() {
+            let _ = fs::remove_file(&archive_path);
+        }
+
+        let index = index_result?;
 
         Ok(ModpackPlan {
             display_name: modpack.title.clone(),
@@ -687,7 +698,11 @@ impl ModpackInstaller {
                 if let Some(e) = last_error {
                     error!("无法下载文件 {}: {}", file_path, e);
                     state.status.store(FILE_FAILED, Ordering::Release);
-                    failed.lock().unwrap().push(file_path);
+                    // 某个任务持锁 panic 时不级联引爆其余下载任务
+                    failed
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(file_path);
                     return;
                 }
 
@@ -734,7 +749,9 @@ impl ModpackInstaller {
             )));
         }
 
-        let failed = failed_files.lock().unwrap();
+        let failed = failed_files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !failed.is_empty() {
             const MAX_SHOWN: usize = 5;
             let shown = failed

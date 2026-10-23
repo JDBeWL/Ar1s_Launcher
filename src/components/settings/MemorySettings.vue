@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
+import { ref, onMounted, onUnmounted, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useSettingsStore } from '../../stores/settings';
 import { configApi } from '../../services';
 import { logError } from '../../utils/logger';
+import { watchDebounced } from '../../composables/useDebounce';
 
 const settingsStore = useSettingsStore();
 const { t } = useI18n();
@@ -74,7 +75,8 @@ function setPresetMemory(mb: number) {
   settingsStore.saveMaxMemory();
 }
 
-watch(
+// 滑块拖动时每跨一档就会触发，不防抖的话一次拖动打出几十个 IPC
+watchDebounced(
   () => settingsStore.maxMemory,
   () => {
     if (!settingsStore.autoMemoryEnabled) void checkMemoryWarning();

@@ -73,7 +73,9 @@ impl AutoMemoryPlan {
 }
 
 pub fn get_system_memory() -> MemoryStats {
-    let mut system = MEMORY_SYSTEM.lock().unwrap();
+    let mut system = MEMORY_SYSTEM
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
 
     let total_memory_mb = system.total_memory() / 1024 / 1024;

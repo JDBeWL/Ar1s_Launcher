@@ -6,7 +6,7 @@
 use crate::errors::LauncherError;
 use crate::models::DownloadJob;
 use crate::models::modpack::*;
-use crate::services::{config, download, instance, launcher, modrinth};
+use crate::services::{config, download, launcher, modrinth};
 use crate::utils::file_utils;
 use log::info;
 use serde::Serialize;
@@ -209,8 +209,13 @@ impl ShaderPackInstaller {
         let version = self.modrinth.get_version(&version_id).await?;
 
         // 先下到临时目录，成功后再替换；下载失败不会把旧版本删掉
-        let staging = context.game_dir.join("temp").join("shaderpack-staging");
+        // staging 每次更新独立（并发更新互不踩），作用域结束整体清掉，失败路径也不留半截文件
+        let staging = context.game_dir.join("temp").join(format!(
+            "shaderpack-staging-{}",
+            file_utils::unique_suffix()
+        ));
         fs::create_dir_all(&staging)?;
+        let _staging_guard = file_utils::TempPathGuard(staging.clone());
         let staged_name = download_version(&version, &staging).await?;
         let staged_path = staging.join(&staged_name);
         let final_path = context.packs_dir.join(&staged_name);
@@ -220,7 +225,6 @@ impl ShaderPackInstaller {
         if old_path != final_path {
             let _ = fs::remove_file(&old_path);
         }
-        let _ = fs::remove_dir(&staging);
 
         info!("光影包更新: {} -> {}", file_name, staged_name);
 

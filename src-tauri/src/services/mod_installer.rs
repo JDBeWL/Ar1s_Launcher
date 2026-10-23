@@ -254,15 +254,20 @@ impl ModInstaller {
         let version = self.modrinth.get_version(&version_id).await?;
 
         // 先下到临时目录，成功后再替换；下载失败不会把旧版本删掉。
-        let staging = context.game_dir.join("temp").join("mod-staging");
+        // staging 每次更新独立（并发更新互不踩），作用域结束整体清掉，失败路径也不留半截文件
+        let staging = context
+            .game_dir
+            .join("temp")
+            .join(format!("mod-staging-{}", file_utils::unique_suffix()));
         fs::create_dir_all(&staging)?;
+        let _staging_guard = file_utils::TempPathGuard(staging.clone());
         let staged_name = download_version(&version, &staging).await?;
         let staged_path = staging.join(&staged_name);
 
         let final_name = if was_disabled {
             format!("{}.disabled", staged_name)
         } else {
-            staged_name
+            staged_name.clone()
         };
         let final_path = context.mods_dir.join(&final_name);
 
@@ -272,7 +277,6 @@ impl ModInstaller {
         if old_path != final_path {
             let _ = fs::remove_file(&old_path);
         }
-        let _ = fs::remove_dir(&staging);
 
         info!("模组更新: {} -> {}", file_name, final_name);
 

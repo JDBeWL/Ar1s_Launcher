@@ -23,6 +23,9 @@ const MIRROR_BASES: [(&str, DownloadSource); 3] = [
     (HKMC_EO_BASE, DownloadSource::HkmcEo),
 ];
 
+/// 一批元数据请求候选：(源, 该源的清单 URL)
+type ManifestBatch = Vec<(DownloadSource, String)>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownloadSource {
     /// 自动：同时探测官方与全部镜像，谁先响应就用谁
@@ -87,7 +90,7 @@ impl DownloadSource {
     /// - Auto：官方与镜像一起竞速，谁先返回用谁
     /// - Mirror：镜像之间竞速，全部失败才回退官方
     /// - Official：官方单独先试，失败后再并发尝试镜像
-    pub fn manifest_batches(self) -> (Vec<(Self, String)>, Vec<(Self, String)>) {
+    pub fn manifest_batches(self) -> (ManifestBatch, ManifestBatch) {
         let official = || (Self::Official, manifest_url(Self::Official));
         let mirrors: Vec<(Self, String)> = [Self::Bmcl, Self::HkmcMain, Self::HkmcEo]
             .into_iter()

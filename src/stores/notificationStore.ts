@@ -83,7 +83,8 @@ export const useNotificationStore = defineStore('notification', () => {
       showErrorDialog(title, message);
       return -1;
     }
-    return notify('error', title, message, 5000);
+    // 6000 要和 GlobalNotification.vue 的 snackbarTimeout 保持一致
+    return notify('error', title, message, 6000);
   }
 
   function warning(title: string, message?: string) {

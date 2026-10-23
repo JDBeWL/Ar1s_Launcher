@@ -165,12 +165,12 @@ pub async fn poll_device_token(device_code: &str) -> Result<TokenResponse, Launc
             return Err(LauncherError::Custom("slow_down".to_string()));
         }
         if body.contains("expired_token") {
-            return Err(LauncherError::Custom(
+            return Err(LauncherError::AuthExpired(
                 "设备代码已过期，请重新登录".to_string(),
             ));
         }
         if body.contains("declined") {
-            return Err(LauncherError::Custom("用户拒绝了授权".to_string()));
+            return Err(LauncherError::AuthDenied("用户拒绝了授权".to_string()));
         }
     }
 
@@ -583,7 +583,7 @@ pub async fn wait_for_auth_callback(
 
     if let Some(error) = params.get("error") {
         let error_desc = params.get("error_description").cloned().unwrap_or_default();
-        return Err(LauncherError::Custom(format!(
+        return Err(LauncherError::AuthDenied(format!(
             "登录被拒绝: {} - {}",
             error, error_desc
         )));

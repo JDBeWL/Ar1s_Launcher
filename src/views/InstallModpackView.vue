@@ -619,17 +619,24 @@ watch(instanceName, (newName) => {
   }, 300);
 });
 
+// 每次发起校验递增：慢的旧校验后到时不得覆盖新结论、也不得提前解除安装按钮的禁用
+let instanceNameCheckSeq = 0;
+
 async function checkInstanceName(name: string) {
   if (!name) return;
 
   checkingInstanceName.value = true;
+  const seq = ++instanceNameCheckSeq;
   try {
     const result = await instanceApi.checkInstanceNameAvailable(name);
+    if (seq !== instanceNameCheckSeq) return;
     instanceNameError.value = result.is_valid ? null : result.error_message;
   } catch (e) {
     logError('Failed to check instance name', e, 'InstallModpackView');
   } finally {
-    checkingInstanceName.value = false;
+    if (seq === instanceNameCheckSeq) {
+      checkingInstanceName.value = false;
+    }
   }
 }
 

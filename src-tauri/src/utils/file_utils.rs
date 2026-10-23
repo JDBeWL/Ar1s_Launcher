@@ -437,6 +437,27 @@ pub fn verify_file(
     Ok(true)
 }
 
+/// 每次临时操作唯一的后缀（进程 id + 纳秒时间戳）：并发操作各有各的临时目录，互不踩
+pub fn unique_suffix() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    format!("{}-{}", std::process::id(), nanos)
+}
+
+/// Drop 时删除这个路径（先按文件删，失败再按目录连内容删），错误一律忽略。
+/// 给失败路径兜底临时残留：成功路径已自行删除时，这里再删一次也是无害的空操作。
+pub struct TempPathGuard(pub PathBuf);
+
+impl Drop for TempPathGuard {
+    fn drop(&mut self) {
+        if std::fs::remove_file(&self.0).is_err() {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
 pub fn cleanup_instance_creation(game_dir: &Path, instance_name: &str, _base_version_id: &str) {
     info!("file_utils: 开始清理实例创建过程中的文件和目录");
 

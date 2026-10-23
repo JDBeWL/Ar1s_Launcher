@@ -38,8 +38,12 @@ export const useDownloadStore = defineStore('download', () => {
   const isInitialized = ref(false);
   // 只有下载页主动发起的下载才归这个 store 管；整合包/实例创建/修复的内部下载不弹全局窗
   const ownsDownload = ref(false);
+  // 后端按游戏目录加下载锁：任何流程的下载期间再点下载只会白报一个占用错误。
+  // download-progress 不区分发起方，全局记一笔在忙，startDownload 据此挡在前面
+  const backendBusy = ref(false);
 
   function handleDownloadProgress(event: DownloadProgress) {
+    backendBusy.value = event.status === 'downloading';
     if (!ownsDownload.value) return;
 
     const data = event as DownloadState;
@@ -99,6 +103,12 @@ export const useDownloadStore = defineStore('download', () => {
   }
 
   async function startDownload(versionId: string, source: string = 'auto') {
+    if (isDownloading.value || backendBusy.value) {
+      const notificationStore = useNotificationStore();
+      notificationStore.warning(translate('downloadStatus.alreadyRunning'));
+      return;
+    }
+
     selectedVersion.value = versionId;
     downloadProgress.value.status = 'downloading';
     downloadError.value = null;

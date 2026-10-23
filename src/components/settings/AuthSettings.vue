@@ -62,8 +62,9 @@ async function startMicrosoftLogin() {
     } catch (err) {
       authCodeWaiting.value = false;
       const msg = getErrorMessage(err);
-      // 后端拒绝授权的文案固定是中文，这里按关键字静默，不弹错误
-      if (getErrorCode(err) !== 'cancelled' && !msg.includes('拒绝了授权') && !msg.includes('被拒绝')) {
+      // 用户主动拒绝授权不算错误，按稳定错误码静默，不弹错误
+      const code = getErrorCode(err);
+      if (code !== 'cancelled' && code !== 'auth_denied') {
         loginError.value = msg;
       }
       logError('Microsoft auth code login failed', err, 'AuthSettings');
@@ -98,8 +99,9 @@ async function startDeviceCodeLogin() {
     } catch (err) {
       loginDialog.value = false;
       const msg = getErrorMessage(err);
-      // 同上：用户拒绝或设备码过期时不该再弹一次错误
-      if (getErrorCode(err) !== 'cancelled' && !msg.includes('拒绝了授权') && !msg.includes('已过期')) {
+      // 同上：用户拒绝授权、设备码过期都不该再弹一次错误
+      const code = getErrorCode(err);
+      if (code !== 'cancelled' && code !== 'auth_denied' && code !== 'auth_expired') {
         loginError.value = msg;
       }
       logError('Microsoft login failed', err, 'AuthSettings');

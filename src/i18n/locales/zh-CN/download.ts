@@ -31,5 +31,6 @@ export default {
     cancelled: '下载已取消',
     remaining: '剩余',
     downloadingPercent: '下载中 {percent}%',
+    alreadyRunning: '已有下载任务在进行，请等待完成后再试',
   },
 };
