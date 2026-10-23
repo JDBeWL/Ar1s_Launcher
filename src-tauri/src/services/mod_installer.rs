@@ -436,7 +436,7 @@ async fn download_version(
 
     let job = DownloadJob {
         url: file.url.clone(),
-        fallback_url: None,
+        fallback_urls: Vec::new(),
         path: target_dir.join(&file.filename),
         size: file.size,
         // 空 sha1 表示上游没给哈希，交给大小与后续校验兜底

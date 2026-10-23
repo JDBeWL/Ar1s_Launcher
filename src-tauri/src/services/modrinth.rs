@@ -631,7 +631,7 @@ impl ModrinthService {
 
         let job = DownloadJob {
             url: file_url.to_string(),
-            fallback_url: None,
+            fallback_urls: Vec::new(),
             path: destination.to_path_buf(),
             size,
             hash: sha1

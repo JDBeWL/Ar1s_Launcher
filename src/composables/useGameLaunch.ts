@@ -137,7 +137,7 @@ export function useGameLaunch() {
     await repairEventSub.subscribe();
 
     try {
-      const mirror = settingsStore.downloadMirror === 'bmcl' ? 'bmcl' : undefined;
+      const mirror = settingsStore.downloadMirror || undefined;
 
       await versionApi.downloadVersion(instanceName, mirror);
       notificationStore.success(translate('launch.repairDone'), translate('launch.repairDoneHint'));

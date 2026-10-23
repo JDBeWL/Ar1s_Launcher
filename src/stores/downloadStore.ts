@@ -98,7 +98,7 @@ export const useDownloadStore = defineStore('download', () => {
     }
   }
 
-  async function startDownload(versionId: string, source: string = 'bmcl') {
+  async function startDownload(versionId: string, source: string = 'auto') {
     selectedVersion.value = versionId;
     downloadProgress.value.status = 'downloading';
     downloadError.value = null;
@@ -108,7 +108,7 @@ export const useDownloadStore = defineStore('download', () => {
     ownsDownload.value = true;
 
     try {
-      await api.version.downloadVersion(selectedVersion.value, source === 'bmcl' ? 'bmcl' : undefined);
+      await api.version.downloadVersion(selectedVersion.value, source);
     } catch (err) {
       logError('Failed to start download invocation', err, 'DownloadStore');
       ownsDownload.value = false;

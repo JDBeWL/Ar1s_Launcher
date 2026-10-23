@@ -63,12 +63,12 @@ describe('DownloadStore', () => {
     const store = useDownloadStore();
     const mockDownload = vi.mocked(api.api.version.downloadVersion).mockResolvedValue(undefined);
 
-    await store.startDownload('1.20.1', 'bmcl');
+    await store.startDownload('1.20.1', 'mirror');
 
     expect(store.selectedVersion).toBe('1.20.1');
     expect(store.downloadProgress.status).toBe('downloading');
     expect(store.downloadError).toBeNull();
-    expect(mockDownload).toHaveBeenCalledWith('1.20.1', 'bmcl');
+    expect(mockDownload).toHaveBeenCalledWith('1.20.1', 'mirror');
   });
 
   it('startDownload 失败时设置错误状态', async () => {

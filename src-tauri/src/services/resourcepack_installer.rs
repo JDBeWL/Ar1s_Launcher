@@ -6,7 +6,7 @@
 use crate::errors::LauncherError;
 use crate::models::DownloadJob;
 use crate::models::modpack::*;
-use crate::services::{config, download, launcher, modrinth};
+use crate::services::{config, download, instance, launcher, modrinth};
 use crate::utils::file_utils;
 use log::info;
 use serde::Serialize;
@@ -275,7 +275,7 @@ async fn download_version(
 
     let job = DownloadJob {
         url: file.url.clone(),
-        fallback_url: None,
+        fallback_urls: Vec::new(),
         path: target_dir.join(&file.filename),
         size: file.size,
         hash: (!file.hashes.sha1.trim().is_empty()).then(|| file.hashes.sha1.clone()),

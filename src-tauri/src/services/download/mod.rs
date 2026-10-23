@@ -6,6 +6,7 @@ pub mod batch;
 mod file;
 mod http;
 mod manifest;
+pub mod source;
 mod state;
 mod version;
 

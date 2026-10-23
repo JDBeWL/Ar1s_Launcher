@@ -6,6 +6,7 @@ use super::forge;
 use crate::errors::LauncherError;
 use crate::services::config;
 use crate::services::download;
+use crate::services::download::source::{self as download_sources, BMCL_BASE, DownloadSource};
 use crate::services::http_client;
 use log::{info, warn};
 use serde_json::Value;
@@ -60,51 +61,48 @@ pub async fn install_neoforge(
     fs::create_dir_all(&temp_dir)?;
     let installer_path = temp_dir.join(format!("neoforge-{}-installer.jar", full_version));
 
-    let bmclapi_url = format!(
-        "{}/version/{}/download/installer.jar",
-        BMCLAPI_NEOFORGE_URL, full_version
-    );
-    let official_url = format!(
+    let installer_url = format!(
         "{}/net/neoforged/neoforge/{}/neoforge-{}-installer.jar",
         NEOFORGE_MAVEN_URL, full_version, full_version
     );
+    let source = DownloadSource::current();
+    let maven_path =
+        format!("net/neoforged/neoforge/{full_version}/neoforge-{full_version}-installer.jar");
+
+    // MC 光速暂未镜像 NeoForge 的 maven（实测 502），国内模式下把 BMCL 放最前；
+    // 光速地址仍排在后面，将来补上镜像时不用再改代码
+    let mut installer_urls = Vec::new();
+    if source.is_mirror() {
+        installer_urls.push(format!(
+            "{}/version/{}/download/installer.jar",
+            BMCLAPI_NEOFORGE_URL, full_version
+        ));
+        installer_urls.push(format!("{BMCL_BASE}/maven/{maven_path}"));
+        installer_urls.extend(
+            download_sources::build_mirror_urls(source, &format!("/maven/{maven_path}"))
+                .into_iter()
+                .filter(|url| !url.starts_with(BMCL_BASE)),
+        );
+    }
+    installer_urls.push(installer_url);
+    let installer_urls = download_sources::dedup_urls(installer_urls);
 
     let mut downloaded = false;
 
     // installer 是几 MB 的大文件下载：用下载客户端（只设读超时），并流式落盘而不是整包进内存
     let download_client = download::get_http_client();
 
-    info!("尝试从 BMCLAPI 下载 NeoForge installer");
-    let bmclapi_sha1 = forge::download_sha1(&client, &bmclapi_url).await;
-    if bmclapi_sha1.is_none() {
-        warn!("NeoForge: 未取到 BMCLAPI installer sha1，仅校验 ZIP 头");
-    }
-    match forge::download_to_file(
-        &bmclapi_url,
-        &download_client,
-        &installer_path,
-        bmclapi_sha1.as_deref(),
-        true,
-    )
-    .await
-    {
-        Ok(true) => {
-            downloaded = true;
-            info!("从 BMCLAPI 下载成功");
-        }
-        Ok(false) => warn!("NeoForge: BMCLAPI installer 不可用，改试官方源"),
-        Err(error) => warn!("NeoForge: BMCLAPI 下载失败: {}", error),
-    }
+    for url in &installer_urls {
+        forge::check_cancelled(cancel)?;
+        info!("尝试下载 NeoForge installer: {}", url);
 
-    if !downloaded {
-        info!("尝试从官方源下载 NeoForge installer: {}", official_url);
-        let expected = forge::download_sha1(&client, &official_url).await;
+        let expected = forge::download_sha1(&client, url).await;
         if expected.is_none() {
-            warn!("NeoForge: 未取到 installer sha1，仅校验 ZIP 头");
+            warn!("NeoForge: 未取到 installer sha1，仅校验 ZIP 头: {}", url);
         }
 
         match forge::download_to_file(
-            &official_url,
+            url,
             &download_client,
             &installer_path,
             expected.as_deref(),
@@ -112,19 +110,20 @@ pub async fn install_neoforge(
         )
         .await
         {
-            Ok(true) => {}
-            Ok(false) => {
-                return Err(LauncherError::Custom(
-                    "NeoForge installer 不是有效 ZIP".to_string(),
-                ));
+            Ok(true) => {
+                downloaded = true;
+                info!("NeoForge installer 下载成功: {}", url);
+                break;
             }
-            Err(e) => {
-                return Err(LauncherError::Custom(format!(
-                    "下载 NeoForge installer 失败: {}",
-                    e
-                )));
-            }
+            Ok(false) => warn!("NeoForge: installer 不是有效 ZIP，换下一个源"),
+            Err(error) => warn!("NeoForge: installer 下载失败，换下一个源: {}", error),
         }
+    }
+
+    if !downloaded {
+        return Err(LauncherError::Custom(
+            "所有下载源都没能获取有效的 NeoForge installer".to_string(),
+        ));
     }
 
     let libraries_dir = game_dir.join("libraries");

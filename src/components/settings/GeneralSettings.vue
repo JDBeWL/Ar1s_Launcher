@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { open } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
@@ -26,6 +26,12 @@ const themePalette = ref(getThemePalette());
 
 // 界面语言用 nativeName 展示，游戏内语言用各自语言的写法
 const interfaceLanguages = uiLanguageStore.languages.map((item) => ({ title: item.nativeName, value: item.value }));
+
+const downloadMirrorOptions = computed(() => [
+  { title: t('settings.general.mirrorAuto'), value: 'auto' },
+  { title: t('settings.general.mirrorOfficial'), value: 'official' },
+  { title: t('settings.general.mirrorMirror'), value: 'mirror' },
+]);
 
 const gameLanguage = ref('zh_cn');
 const gameLanguages = [
@@ -286,25 +292,14 @@ onUnmounted(() => {
 
         <div>
           <div class="text-body-medium mb-3">{{ t('settings.general.mirrorTitle') }}</div>
-          <v-btn-toggle
+          <v-select
             v-model="settingsStore.downloadMirror"
-            mandatory
-            border
-            divided
-            rounded="pill"
+            :items="downloadMirrorOptions"
+            :aria-label="t('settings.general.mirrorTitle')"
             density="comfortable"
-            variant="text"
-            color="primary"
-          >
-            <v-btn value="official" class="px-4">
-              <v-icon start size="18">mdi-web</v-icon>
-              {{ t('settings.general.mirrorOfficial') }}
-            </v-btn>
-            <v-btn value="bmcl" class="px-4">
-              <v-icon start size="18">mdi-lightning-bolt</v-icon>
-              {{ t('settings.general.mirrorBmcl') }}
-            </v-btn>
-          </v-btn-toggle>
+            variant="outlined"
+            hide-details
+          />
           <p class="text-body-small text-on-surface-variant mt-2 mb-0">
             {{ t('settings.general.mirrorHint') }}
           </p>

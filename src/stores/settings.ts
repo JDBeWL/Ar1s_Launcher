@@ -13,7 +13,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const usedMemoryMB = ref(0);
   const availableMemoryMB = ref(0);
   const memoryUsagePercent = ref(0);
-  const downloadMirror = ref('bmcl');
+  const downloadMirror = ref('auto');
   const javaInstallations = ref<string[]>([]);
   const hasFoundJavaInstallations = ref(false);
   const autoMatchJava = ref(true);
@@ -38,7 +38,10 @@ export const useSettingsStore = defineStore('settings', () => {
         maxMemory.value = config.max_memory;
       }
       if (config.download_mirror) {
-        downloadMirror.value = config.download_mirror;
+        // 旧配置里的 bmcl / hkmc / hkmc-eo 都归到“优先镜像”，未知值同样按镜像处理
+        downloadMirror.value = ['auto', 'official', 'mirror'].includes(config.download_mirror)
+          ? config.download_mirror
+          : 'mirror';
       }
       autoMatchJava.value = config.auto_match_java;
       autoMemoryEnabled.value = config.auto_memory_enabled;

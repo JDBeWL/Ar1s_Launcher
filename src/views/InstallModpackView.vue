@@ -844,7 +844,7 @@ async function completeMissingFiles() {
   installProgress.value = { progress: 100, message: t('installModpack.completingFiles'), indeterminate: true };
 
   try {
-    const mirror = settingsStore.downloadMirror === 'bmcl' ? 'bmcl' : undefined;
+    const mirror = settingsStore.downloadMirror || undefined;
     await versionApi.downloadVersion(effectiveInstanceName.value, mirror);
     finishInstall(t('installModpack.installDoneCompleted', { name: effectiveInstanceName.value }));
   } catch (e) {

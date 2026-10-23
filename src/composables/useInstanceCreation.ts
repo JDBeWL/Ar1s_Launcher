@@ -332,7 +332,7 @@ export function useInstanceCreation() {
         progressText.value = translate('customInstall.completingFiles');
         await downloadProgressSub.subscribe();
         try {
-          const mirror = settingsStore.downloadMirror === 'bmcl' ? 'bmcl' : undefined;
+          const mirror = settingsStore.downloadMirror || undefined;
           await api.version.downloadVersion(finalInstanceName, mirror);
         } catch (error) {
           completionFailed = true;

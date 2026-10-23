@@ -49,7 +49,7 @@ Ar1s Launcher manages Minecraft versions, mod loaders and isolated game instance
 
 ### Downloads
 
-- Official Mojang sources, with an optional BMCLAPI mirror for users in mainland China
+- Automatic source selection, or prefer the official source / a domestic mirror; all modes fall back automatically
 - Automatic fallback between sources
 - Configurable download threads and resume support
 - SHA-1 verification, file integrity checks and one-click repair of missing files
@@ -185,7 +185,7 @@ Opening an instance goes to its own page instead of a dialog, with tabs for:
 
 ### Downloads
 
-Browse releases and snapshots, filter by type, choose a source (official or BMCLAPI), and follow progress in real time.
+Browse releases and snapshots, filter by type, choose a source strategy (auto, prefer official, or prefer mirror), and follow progress in real time.
 
 ### Settings
 
@@ -211,7 +211,7 @@ General (game directory, download source, threads, proxy, interface language, in
 
 - **Modrinth**: pack metadata and files come from the official Modrinth API and CDN.
 - **CurseForge** (planned): the launcher will use a user-supplied API key and call the official API. Files will always be downloaded from CurseForge's own CDN — nothing is re-hosted, mirrored or redistributed. Projects that have third-party distribution disabled will not be installed automatically; the launcher will explain why and link to the project page instead.
-- **Minecraft**: version manifests, libraries and assets are fetched from Mojang's official servers, with BMCLAPI as an optional mirror.
+- **Minecraft**: version manifests, libraries and assets are fetched with automatic selection, preferring the official source or a domestic mirror (BMCLAPI / MC Mirror).
 - Metadata is used only to render the interface, is kept in memory or a short-lived local cache, and is never exposed as a public API or resold.
 - The launcher is free, contains no ads, and does not attempt to bypass any platform's client or author reward program.
 

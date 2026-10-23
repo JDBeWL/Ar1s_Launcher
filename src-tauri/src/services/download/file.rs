@@ -1,7 +1,7 @@
 //! 单个文件下载
 //!
 //! 写 .part 临时文件按 Range 续传，边写边算 sha1（写完不再整盘重读），
-//! 校验失败时切换到 fallback_url。
+//! 校验失败或源不可用时按 `fallback_urls` 依次换源。
 //!
 //! 竞速（主备源同时发，先回的胜出）与分段（大文件切几段各用一条连接）都只在体积值得时才启用
 
@@ -79,43 +79,35 @@ pub async fn download_file(
         }
     }
 
-    match download_with_resume(
-        http,
-        url,
-        job,
-        state,
-        global_cancel,
-        bytes_downloaded,
-        bytes_since_last,
-    )
-    .await
-    {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            if e.is_cancelled() {
+    let candidates = job.urls_from(url);
+
+    for (index, candidate) in candidates.iter().enumerate() {
+        match download_with_resume(
+            http,
+            candidate,
+            job,
+            state,
+            global_cancel,
+            bytes_downloaded,
+            bytes_since_last,
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if e.is_cancelled() {
+                    return Err(e);
+                }
+                if index + 1 < candidates.len() && should_try_fallback(&e) {
+                    warn!("源 {} 失败（{}），尝试下一个源", candidate, e);
+                    continue;
+                }
                 return Err(e);
             }
-            if let Some(fallback_url) = &job.fallback_url
-                && should_try_fallback(&e)
-            {
-                warn!(
-                    "Primary URL {} failed ({}), trying fallback: {}",
-                    job.url, e, fallback_url
-                );
-                return download_with_resume(
-                    http,
-                    fallback_url,
-                    job,
-                    state,
-                    global_cancel,
-                    bytes_downloaded,
-                    bytes_since_last,
-                )
-                .await;
-            }
-            Err(e)
         }
     }
+
+    Err(LauncherError::Custom("没有可用的下载地址".to_string()))
 }
 
 /// 校验会有整文件读盘，扔到阻塞线程池，别占着 async worker
@@ -129,16 +121,29 @@ async fn verify_existing(job: &DownloadJob) -> Result<bool, LauncherError> {
 }
 
 fn should_try_fallback(e: &LauncherError) -> bool {
-    let is_http_error = if let LauncherError::Http(err) = e {
-        err.status() == Some(reqwest::StatusCode::NOT_FOUND) || err.is_timeout()
-    } else {
-        false
-    };
+    // HTTP 状态错误带在 reqwest::Error 里：超时、连接失败、404/403/429 与 5xx
+    // 都值得换源；请求本身写错（400 之类）换源也救不回来。
+    if let LauncherError::Http(err) = e {
+        if err.is_timeout() || err.is_connect() {
+            return true;
+        }
+        return match err.status() {
+            Some(status) => {
+                status == reqwest::StatusCode::NOT_FOUND
+                    || status == reqwest::StatusCode::FORBIDDEN
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || status.is_server_error()
+            }
+            None => true,
+        };
+    }
 
     let err_str = e.to_string();
-    is_http_error
+    err_str.contains("HTTP error")
+        || err_str.contains("分段")
         || err_str.contains("size or hash mismatch")
         || err_str.contains("File size mismatch")
+        || err_str.contains("File verification failed")
         || err_str.contains("Unexpected Content-Length")
         || err_str.contains("Unexpected Content-Type")
 }
@@ -291,9 +296,10 @@ async fn open_stream(
     resume_from: Option<u64>,
 ) -> Result<OpenedStream, LauncherError> {
     let fallback = job
-        .fallback_url
-        .as_deref()
-        .filter(|fallback| *fallback != url && !fallback.is_empty());
+        .fallback_urls
+        .iter()
+        .find(|fallback| *fallback != url && !fallback.is_empty())
+        .map(String::as_str);
 
     match fallback {
         Some(fallback) if url == job.url && job.size >= RACE_MIN_BYTES => {
@@ -360,10 +366,11 @@ async fn send_stream_request(
     let status = response.status();
 
     if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
-        return Err(LauncherError::Custom(format!(
-            "HTTP error {} for {}",
-            status, url
-        )));
+        // 保留状态码：上层靠 reqwest::Error::status() 判断要不要换源
+        return Err(match response.error_for_status_ref() {
+            Err(error) => LauncherError::Http(error),
+            Ok(_) => LauncherError::Custom(format!("HTTP error {} for {}", status, url)),
+        });
     }
 
     // 服务端不认 Range 会返回 200 和整个文件：续传点作废，从头写
@@ -712,14 +719,14 @@ async fn download_segment(
 
     let status = response.status();
     if status != reqwest::StatusCode::PARTIAL_CONTENT {
-        // 200 说明服务端把 Range 忽略了；其余状态码是真错误
+        // 200 说明服务端把 Range 忽略了；其余状态码是真错误，保留状态码供换源判断
         return Err(if status.is_success() {
             SegmentError::RangeUnsupported
         } else {
-            SegmentError::Fatal(LauncherError::Custom(format!(
-                "分段请求返回 HTTP {} for {}",
-                status, url
-            )))
+            SegmentError::Fatal(match response.error_for_status_ref() {
+                Err(error) => LauncherError::Http(error),
+                Ok(_) => LauncherError::Custom(format!("分段请求返回 HTTP {} for {}", status, url)),
+            })
         });
     }
 
@@ -983,7 +990,7 @@ mod tests {
     fn job(size: u64) -> DownloadJob {
         DownloadJob {
             url: "https://example.com/x".to_string(),
-            fallback_url: None,
+            fallback_urls: Vec::new(),
             path: PathBuf::from("x.jar"),
             size,
             hash: None,
@@ -1241,7 +1248,7 @@ mod tests {
     fn big_job(path: std::path::PathBuf, size: u64, hash: &str) -> DownloadJob {
         DownloadJob {
             url: "https://example.com/big.jar".to_string(),
-            fallback_url: None,
+            fallback_urls: Vec::new(),
             path,
             size,
             hash: Some(hash.to_string()),
@@ -1356,7 +1363,7 @@ mod tests {
 
         let job = DownloadJob {
             url: slow_url,
-            fallback_url: Some(fast_url),
+            fallback_urls: vec![fast_url],
             path: target.clone(),
             size: size as u64,
             hash: Some(hash),

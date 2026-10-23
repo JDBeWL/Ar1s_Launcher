@@ -533,12 +533,9 @@ fn spawn_download_task(
                 break;
             }
 
-            // 重试 2 次后改用官方源 fallback_url
-            let current_url = if retry >= 2 && job.url.contains("bmclapi2.bangbang93.com") {
-                job.fallback_url.as_deref().unwrap_or(&job.url)
-            } else {
-                &job.url
-            };
+            // 每次重试从候选链的下一个源开始：首个源持续坏掉时不会每次都先等它超时，
+            // download_file 内部还会继续尝试其余备用地址
+            let current_url = job.url_for_attempt(retry);
 
             let attempt_str = if retry == 0 {
                 "attempt 1".to_string()
@@ -665,7 +662,7 @@ mod tests {
     fn job(size: u64) -> DownloadJob {
         DownloadJob {
             url: format!("https://example.com/{size}"),
-            fallback_url: None,
+            fallback_urls: Vec::new(),
             path: PathBuf::from(format!("{size}.jar")),
             size,
             hash: None,

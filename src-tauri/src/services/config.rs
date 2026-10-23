@@ -344,7 +344,7 @@ fn create_default_config(is_first_run: bool) -> Result<GameConfig, LauncherError
         uuid: None,
         skin_url: None,
         max_memory: crate::models::default_max_memory(),
-        download_mirror: Some("bmcl".to_string()),
+        download_mirror: Some("auto".to_string()),
         proxy_mode: crate::models::ProxyMode::System,
         proxy_url: None,
         auto_memory_enabled: false,

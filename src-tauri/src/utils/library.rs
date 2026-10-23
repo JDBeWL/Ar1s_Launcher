@@ -14,7 +14,7 @@ pub struct LibraryFile {
     pub size: u64,
     pub sha1: Option<String>,
     pub is_native: bool,
-    /// 路径由 maven 坐标推导，没有 downloads 元数据；下载侧可走 BMCL 的 maven/libraries 镜像
+    /// 路径由 maven 坐标推导，没有 downloads 元数据；下载侧可走镜像的 /maven 路径
     pub from_maven: bool,
 }
 

@@ -629,7 +629,7 @@ impl ModpackInstaller {
             // Modrinth 每个文件给多个镜像：第一个当主源、第二个当备源
             let job = DownloadJob {
                 url: file.downloads.first().cloned().unwrap_or_default(),
-                fallback_url: file.downloads.get(1).cloned(),
+                fallback_urls: file.downloads.get(1).cloned().into_iter().collect(),
                 path: instance_dir.join(&file.path),
                 size: file.file_size.unwrap_or(0),
                 // index.json 允许 sha1 为空串，为空时不校验，否则好文件会被判坏

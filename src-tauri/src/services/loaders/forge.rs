@@ -5,6 +5,7 @@
 use crate::errors::LauncherError;
 use crate::services::config;
 use crate::services::download;
+use crate::services::download::source::{self as download_sources, DownloadSource};
 use crate::services::http_client;
 use crate::services::launcher::java::JavaCandidate;
 use crate::utils::file_utils;
@@ -28,25 +29,39 @@ const INSTALLER_TIMEOUT: Duration = Duration::from_secs(600);
 const PROCESSOR_TIMEOUT: Duration = Duration::from_secs(300);
 
 const BMCL_API_BASE_URL: &str = "https://bmclapi2.bangbang93.com";
-const BMCL_LIBRARIES_URL: &str = "https://bmclapi2.bangbang93.com/libraries";
-const BMCL_MAVEN_URL: &str = "https://bmclapi2.bangbang93.com/maven";
 const MAVEN_FORGE: &str = "https://maven.minecraftforge.net";
 const MAVEN_CENTRAL: &str = "https://repo1.maven.org/maven2";
 const MAVEN_MINECRAFT: &str = "https://libraries.minecraft.net";
 
-/// 官方 maven 地址 → BMCLAPI 镜像，只映射 BMCLAPI 确实镜像了的域名。
-/// `maven.neoforged.net` 在国内经常连不上（本机实测 21 秒超时），不换源会先卡在官方地址上
-fn mirror_url(url: &str) -> Option<String> {
-    let mappings = [
-        (MAVEN_MINECRAFT, BMCL_LIBRARIES_URL),
-        (MAVEN_FORGE, BMCL_MAVEN_URL),
-        ("https://maven.neoforged.net/releases", BMCL_MAVEN_URL),
-    ];
-
-    mappings.iter().find_map(|(official, mirrored)| {
+/// 官方 maven 地址 → 镜像内路径
+///
+/// 只映射镜像确实覆盖了的域名；镜像统一用 `/maven/{path}`（BMCL 与 MC 光速都支持），
+/// 不区分 Mojang 库与 Forge/NeoForge 库。
+fn maven_mirror_path(url: &str) -> Option<String> {
+    let path = [
+        MAVEN_MINECRAFT,
+        MAVEN_FORGE,
+        "https://maven.neoforged.net/releases",
+        MAVEN_CENTRAL,
+    ]
+    .iter()
+    .find_map(|official| {
         url.strip_prefix(official)
-            .map(|rest| format!("{}{}", mirrored, rest))
-    })
+            .map(|rest| rest.trim_start_matches('/').to_string())
+    })?;
+
+    Some(format!("/maven/{path}"))
+}
+
+/// 官方 maven 地址在当前下载源下的候选镜像地址
+fn mirror_urls(url: &str, source: DownloadSource) -> Vec<String> {
+    if let Some(path) = download_sources::mirror_path(url) {
+        return download_sources::build_mirror_urls(source, &path);
+    }
+
+    maven_mirror_path(url)
+        .map(|path| download_sources::build_mirror_urls(source, &path))
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -330,18 +345,19 @@ fn forge_installer_sources(mc: &str, v: &str) -> Vec<String> {
         vec![plain, suffixed]
     };
 
-    let mut sources = Vec::with_capacity(coords.len() * 2);
+    let mut sources = Vec::with_capacity(coords.len() * 4);
+    let source = DownloadSource::current();
+
     for coord in &coords {
-        sources.push(format!(
-            "{}/net/minecraftforge/forge/{coord}/forge-{coord}-installer.jar",
-            BMCL_LIBRARIES_URL
+        let path = format!("net/minecraftforge/forge/{coord}/forge-{coord}-installer.jar");
+        sources.extend(download_sources::build_mirror_urls(
+            source,
+            &format!("/maven/{path}"),
         ));
-        sources.push(format!(
-            "{}/net/minecraftforge/forge/{coord}/forge-{coord}-installer.jar",
-            MAVEN_FORGE
-        ));
+        sources.push(format!("{MAVEN_FORGE}/{path}"));
     }
-    sources
+
+    download_sources::dedup_urls(sources)
 }
 
 /// 流式把 URL 写到目标文件，边写边算 sha1，可选校验 ZIP 头
@@ -695,6 +711,14 @@ async fn download_library(
     )))
 }
 
+/// 老版本 Forge 预置库的候选地址：镜像 `/maven/{path}` 在前，官方 maven 兜底
+fn preloaded_library_sources(path: &str, official_urls: Vec<String>) -> Vec<String> {
+    let source = DownloadSource::current();
+    let mut urls = download_sources::build_mirror_urls(source, &format!("/maven/{path}"));
+    urls.extend(official_urls);
+    download_sources::dedup_urls(urls)
+}
+
 async fn download_launchwrapper_library(
     libraries_dir: &Path,
     _mc_version: &str,
@@ -703,10 +727,13 @@ async fn download_launchwrapper_library(
     download_library(
         libraries_dir,
         path,
-        vec![
-            format!("{}/{}", BMCL_LIBRARIES_URL, path),
-            format!("{}/{}", MAVEN_MINECRAFT, path),
-        ],
+        preloaded_library_sources(
+            path,
+            vec![
+                format!("{}/{}", MAVEN_MINECRAFT, path),
+                format!("{}/{}", MAVEN_CENTRAL, path),
+            ],
+        ),
         "LaunchWrapper",
     )
     .await
@@ -729,10 +756,7 @@ async fn download_asm_library(libraries_dir: &Path, mc_version: &str) -> Result<
     download_library(
         libraries_dir,
         &path,
-        vec![
-            format!("{}/{}", BMCL_LIBRARIES_URL, path),
-            format!("{}/{}", MAVEN_CENTRAL, path),
-        ],
+        preloaded_library_sources(&path, vec![format!("{}/{}", MAVEN_CENTRAL, path)]),
         "ASM",
     )
     .await
@@ -750,10 +774,7 @@ async fn download_lzma_library(
     download_library(
         libraries_dir,
         path,
-        vec![
-            format!("{}/{}", BMCL_LIBRARIES_URL, path),
-            format!("{}/{}", MAVEN_CENTRAL, path),
-        ],
+        preloaded_library_sources(path, vec![format!("{}/{}", MAVEN_CENTRAL, path)]),
         "LZMA/XZ",
     )
     .await
@@ -804,16 +825,20 @@ pub(crate) async fn download_library_from_profile(
             fs::create_dir_all(parent).ok();
         }
 
+        let source = DownloadSource::current();
         let mut sources = Vec::new();
         if let Some(url) = artifact.get("url").and_then(|u| u.as_str()) {
             // 镜像优先：官方 maven 在国内可能整段超时，先试镜像能把等待从几十秒压到几百毫秒
-            if let Some(mirrored) = mirror_url(url) {
-                sources.push(mirrored);
-            }
+            sources.extend(mirror_urls(url, source));
             sources.push(url.to_string());
         }
-        sources.push(format!("{}/{}", BMCL_LIBRARIES_URL, path));
+        sources.extend(download_sources::build_mirror_urls(
+            source,
+            &format!("/maven/{path}"),
+        ));
+        sources.push(format!("{}/{}", MAVEN_MINECRAFT, path));
         sources.push(format!("{}/{}", MAVEN_FORGE, path));
+        let sources = download_sources::dedup_urls(sources);
 
         for url in &sources {
             match download_to_file(url, client, &target_path, expected_sha1, true).await {
@@ -833,11 +858,18 @@ pub(crate) async fn download_library_from_profile(
             return Ok(());
         }
 
-        let sources = vec![
-            format!("{}/{}", BMCL_LIBRARIES_URL, maven_path),
-            format!("{}/{}", MAVEN_FORGE, maven_path),
-            format!("{}/{}", MAVEN_CENTRAL, maven_path),
-        ];
+        let source = DownloadSource::current();
+        let sources = download_sources::dedup_urls(
+            [
+                download_sources::build_mirror_urls(source, &format!("/maven/{maven_path}")),
+                vec![
+                    format!("{}/{}", MAVEN_MINECRAFT, maven_path),
+                    format!("{}/{}", MAVEN_FORGE, maven_path),
+                    format!("{}/{}", MAVEN_CENTRAL, maven_path),
+                ],
+            ]
+            .concat(),
+        );
 
         let client = download::get_http_client();
         for url in &sources {
@@ -1477,9 +1509,10 @@ fn choose_processor_java(
 mod tests {
     use super::{
         ProcessorVars, choose_installer_java, choose_processor_java, find_installed_loader_dir,
-        forge_installer_sources, loader_jar_present, mirror_url, resolve_processor_arg,
+        forge_installer_sources, loader_jar_present, mirror_urls, resolve_processor_arg,
         run_limited_command, runs_on_client, snapshot_version_dirs,
     };
+    use crate::services::download::source::{BMCL_BASE, DownloadSource, HKMC_MAIN_BASE};
     use crate::services::launcher::java::{JavaArch, JavaCandidate};
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
@@ -1854,43 +1887,66 @@ mod tests {
         );
     }
 
-    /// BMCLAPI 同时镜像了 Mojang 库、Forge 与 NeoForge 的 maven；这三类都要换源，
+    /// BMCL 与 MC 光速都镜像了 Mojang 库、Forge 与 NeoForge 的 maven；这三类都要换源，
     /// 否则官方地址在国内会先卡满超时
     #[test]
-    fn test_mirror_url_covers_neoforge_forge_and_mojang() {
+    fn test_mirror_urls_covers_neoforge_forge_and_mojang() {
+        let source = DownloadSource::HkmcMain;
         assert_eq!(
-            mirror_url(
-                "https://maven.neoforged.net/releases/net/neoforged/fancymodloader/loader/12.0.0/loader-12.0.0.jar"
+            mirror_urls(
+                "https://maven.neoforged.net/releases/net/neoforged/fancymodloader/loader/12.0.0/loader-12.0.0.jar",
+                source,
             )
-            .as_deref(),
+            .first()
+            .map(String::as_str),
             Some(
-                "https://bmclapi2.bangbang93.com/maven/net/neoforged/fancymodloader/loader/12.0.0/loader-12.0.0.jar"
+                "https://bsmirror.hkmc.online/maven/net/neoforged/fancymodloader/loader/12.0.0/loader-12.0.0.jar"
             )
         );
         assert_eq!(
-            mirror_url("https://maven.minecraftforge.net/net/minecraftforge/forge/1.12.2-14.23.5.2860/forge-1.12.2-14.23.5.2860-universal.jar")
-                .as_deref(),
-            Some("https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/1.12.2-14.23.5.2860/forge-1.12.2-14.23.5.2860-universal.jar")
+            mirror_urls("https://maven.minecraftforge.net/net/minecraftforge/forge/1.12.2-14.23.5.2860/forge-1.12.2-14.23.5.2860-universal.jar", source)
+                .first()
+                .map(String::as_str),
+            Some("https://bsmirror.hkmc.online/maven/net/minecraftforge/forge/1.12.2-14.23.5.2860/forge-1.12.2-14.23.5.2860-universal.jar")
         );
         assert_eq!(
-            mirror_url(
-                "https://libraries.minecraft.net/com/mojang/brigadier/1.3.11/brigadier-1.3.11.jar"
+            mirror_urls(
+                "https://libraries.minecraft.net/com/mojang/brigadier/1.3.11/brigadier-1.3.11.jar",
+                source,
             )
-            .as_deref(),
+            .first()
+            .map(String::as_str),
             Some(
-                "https://bmclapi2.bangbang93.com/libraries/com/mojang/brigadier/1.3.11/brigadier-1.3.11.jar"
+                "https://bsmirror.hkmc.online/maven/com/mojang/brigadier/1.3.11/brigadier-1.3.11.jar"
             )
         );
+
+        // BMCL 源下第一条是 BMCL，后面才是光速两条线路
+        let bmcl = mirror_urls(
+            "https://libraries.minecraft.net/com/mojang/brigadier/1.3.11/brigadier-1.3.11.jar",
+            DownloadSource::Bmcl,
+        );
+        assert_eq!(
+            bmcl[0],
+            format!("{BMCL_BASE}/maven/com/mojang/brigadier/1.3.11/brigadier-1.3.11.jar")
+        );
+        assert!(bmcl.contains(&format!(
+            "{HKMC_MAIN_BASE}/maven/com/mojang/brigadier/1.3.11/brigadier-1.3.11.jar"
+        )));
     }
 
-    /// 没镜像的域名保持原样，交给调用方按原地址下
+    /// repo1.maven.org 的地址同样能通过镜像的 /maven 路径换源
     #[test]
-    fn test_mirror_url_leaves_unknown_hosts_alone() {
+    fn test_mirror_urls_handles_maven_central() {
+        let urls = mirror_urls(
+            "https://repo1.maven.org/maven2/com/google/guava/guava/33.6.0-jre/guava-33.6.0-jre.jar",
+            DownloadSource::Bmcl,
+        );
         assert_eq!(
-            mirror_url(
-                "https://repo1.maven.org/maven2/com/google/guava/guava/33.6.0-jre/guava-33.6.0-jre.jar"
-            ),
-            None
+            urls.first().map(String::as_str),
+            Some(
+                "https://bmclapi2.bangbang93.com/maven/com/google/guava/guava/33.6.0-jre/guava-33.6.0-jre.jar"
+            )
         );
     }
 

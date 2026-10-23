@@ -289,11 +289,62 @@ pub struct DownloadProgress {
 
 #[derive(Debug, Clone)]
 pub struct DownloadJob {
+    /// 首选地址
     pub url: String,
-    pub fallback_url: Option<String>,
+    /// 备用地址，按顺序尝试（其他镜像、官方源等）
+    pub fallback_urls: Vec<String>,
     pub path: PathBuf,
     pub size: u64,
     pub hash: Option<String>,
+}
+
+impl DownloadJob {
+    pub fn new(
+        url: String,
+        fallback_urls: Vec<String>,
+        path: PathBuf,
+        size: u64,
+        hash: Option<String>,
+    ) -> Self {
+        let fallback_urls = fallback_urls
+            .into_iter()
+            .filter(|candidate| !candidate.is_empty() && *candidate != url)
+            .fold(Vec::new(), |mut unique: Vec<String>, candidate| {
+                if !unique.contains(&candidate) {
+                    unique.push(candidate);
+                }
+                unique
+            });
+
+        Self {
+            url,
+            fallback_urls,
+            path,
+            size,
+            hash,
+        }
+    }
+
+    /// 本次尝试的起始地址：`attempt` 递增时轮换首选源，避免每次都先撞同一个坏源
+    pub fn url_for_attempt(&self, attempt: usize) -> &str {
+        match attempt % (1 + self.fallback_urls.len()) {
+            0 => &self.url,
+            index => &self.fallback_urls[index - 1],
+        }
+    }
+
+    /// 从 `preferred` 开始的所有候选地址（去重，保持顺序）
+    pub fn urls_from<'a>(&'a self, preferred: &'a str) -> Vec<&'a str> {
+        let mut urls = vec![preferred];
+        for candidate in
+            std::iter::once(self.url.as_str()).chain(self.fallback_urls.iter().map(String::as_str))
+        {
+            if candidate != preferred && !urls.contains(&candidate) {
+                urls.push(candidate);
+            }
+        }
+        urls
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
