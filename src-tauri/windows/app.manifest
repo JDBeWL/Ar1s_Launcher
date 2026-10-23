@@ -1,4 +1,5 @@
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!-- Common-Controls is required by the tauri dialog API; a custom manifest replaces the tauri default, so keep this dependency -->
   <dependency>
     <dependentAssembly>
       <assemblyIdentity
@@ -11,10 +12,9 @@
       />
     </dependentAssembly>
   </dependency>
-  <!-- Common-Controls 是 tauri dialog API 的硬依赖，自定义清单必须保留上面的 dependency -->
+  <!-- Keep this file ASCII-only: a manifest without BOM is parsed via the system ANSI code page, and non-ASCII bytes turn the embedded manifest into invalid XML, making the exe fail to start with os error 14001. Chinese notes live in build.rs. -->
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
-      <!-- 实例名/库坐标拼出的路径很容易超过 260 字符；系统开启 LongPathsEnabled 时直通长路径 -->
       <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
     </windowsSettings>
   </application>
