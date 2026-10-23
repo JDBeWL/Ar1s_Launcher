@@ -74,15 +74,22 @@ function compatibilityHint(pack: ResourcePackInfo): { text: string; color: strin
 }
 
 async function loadPacks() {
+  // 快速切换实例时旧实例的慢响应后到会覆盖新列表，之后按旧文件名操作就会写错目录
+  const target = props.instanceName;
   loading.value = true;
   error.value = '';
   try {
-    packs.value = await resourcePackApi.getResourcePacks(props.instanceName);
+    const list = await resourcePackApi.getResourcePacks(target);
+    if (props.instanceName !== target) return;
+    packs.value = list;
   } catch (e) {
+    if (props.instanceName !== target) return;
     logError('Failed to load resource packs', e, 'ResourcePacksPanel');
     error.value = getErrorMessage(e);
   } finally {
-    loading.value = false;
+    if (props.instanceName === target) {
+      loading.value = false;
+    }
   }
 }
 

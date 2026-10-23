@@ -70,6 +70,25 @@ async fn download_version(
     window: &Window,
     scope: VersionDownloadScope,
 ) -> Result<(), LauncherError> {
+    let mut visited = std::collections::HashSet::new();
+    download_version_inner(version_id, mirror, window, scope, &mut visited).await
+}
+
+async fn download_version_inner(
+    version_id: String,
+    mirror: Option<String>,
+    window: &Window,
+    scope: VersionDownloadScope,
+    visited: &mut std::collections::HashSet<String>,
+) -> Result<(), LauncherError> {
+    // 环形继承链（A 继承 B、B 又继承 A）会让下面的递归永不终止，按已处理的版本 id 去重
+    if !visited.insert(version_id.clone()) {
+        return Err(LauncherError::Custom(format!(
+            "版本继承链存在循环: {} 重复出现",
+            version_id
+        )));
+    }
+
     let source = mirror
         .as_deref()
         .map(|value| DownloadSource::from_setting(Some(value)))
@@ -99,11 +118,12 @@ async fn download_version(
             if let Some(inherits_from) = local_json["inheritsFrom"].as_str() {
                 file_utils::validate_version_id_or_error(inherits_from)?;
                 info!("版本 {} 继承自 {}", version_id, inherits_from);
-                Box::pin(download_version(
+                Box::pin(download_version_inner(
                     inherits_from.to_string(),
                     mirror.clone(),
                     window,
                     scope,
+                    visited,
                 ))
                 .await?;
 
@@ -341,6 +361,17 @@ async fn collect_assets(
         .ok_or_else(|| LauncherError::Custom("无法获取资源索引URL".to_string()))?;
     let assets_index_sha1 = version_json["assetIndex"]["sha1"].as_str();
 
+    // id 来自版本清单（镜像可控），带路径分隔符或 .. 的值能让下面的 join 逃出 indexes/
+    if !file_utils::is_safe_relative_path(assets_index_id)
+        || assets_index_id.contains('/')
+        || assets_index_id.contains('\\')
+    {
+        return Err(LauncherError::Custom(format!(
+            "assetIndex.id 含非法路径字符: {}",
+            assets_index_id
+        )));
+    }
+
     let assets_index_path = assets_base_dir
         .join("indexes")
         .join(format!("{}.json", assets_index_id));
@@ -436,13 +467,15 @@ fn collect_asset_objects(
         let hash = obj["hash"]
             .as_str()
             .ok_or_else(|| LauncherError::Custom("资源缺少hash".to_string()))?;
-        // 官方索引里的 hash 都是完整的 sha1；短成这样说明数据坏了，跳过而不是在切片上 panic
-        let Some(prefix) = hash.get(..2) else {
+        // hash 直接拼进对象路径（objects/<前2位>/<hash>）与下载 URL，
+        // 非标准格式既可能是数据损坏也可能是穿越攻击，一律按 sha1 校验后放行
+        let Some(hash) = file_utils::parse_sha1(hash) else {
             warn!("资源索引里有异常的 hash，已跳过: {}", hash);
             continue;
         };
+        let prefix = &hash[..2];
         let size = obj["size"].as_u64().unwrap_or(0);
-        let urls = download_sources::asset_object_urls(source, prefix, hash);
+        let urls = download_sources::asset_object_urls(source, prefix, &hash);
         let Some(primary_url) = urls.first() else {
             continue;
         };
@@ -450,9 +483,9 @@ fn collect_asset_objects(
         downloads.push(DownloadJob::new(
             primary_url.clone(),
             urls.into_iter().skip(1).collect(),
-            objects_dir.join(prefix).join(hash),
+            objects_dir.join(prefix).join(&hash),
             size,
-            Some(hash.to_string()),
+            Some(hash),
         ));
     }
 
@@ -468,6 +501,13 @@ fn collect_libraries(
     fs::create_dir_all(libraries_base_dir)?;
 
     for file in crate::utils::library::resolve_library_files(version_json) {
+        // relative_path 可能来自镜像返回的 downloads.artifact.path，
+        // 带穿越段的值会让 join 逃出 libraries/，校验不过直接跳过
+        if !file_utils::is_safe_relative_path(&file.relative_path) {
+            warn!("库文件路径可疑，已跳过: {}", file.relative_path);
+            continue;
+        }
+
         let target_path = libraries_base_dir.join(&file.relative_path);
 
         // maven 回退路径才按“文件已在位”跳过；官方 artifact 的续传/校验交给下载状态

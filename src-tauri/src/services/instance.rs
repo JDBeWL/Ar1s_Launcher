@@ -621,6 +621,19 @@ fn find_real_minecraft_version(
     json_value: &Value,
     versions_dir: &Path,
 ) -> Option<String> {
+    find_real_minecraft_version_at_depth(version_id, json_value, versions_dir, 0)
+}
+
+fn find_real_minecraft_version_at_depth(
+    version_id: &str,
+    json_value: &Value,
+    versions_dir: &Path,
+    depth: usize,
+) -> Option<String> {
+    // 只用来填 instance.json 的元数据，遇到环形继承链时放弃即可
+    if depth > 16 {
+        return None;
+    }
     if let Some(inherits) = json_value["inheritsFrom"].as_str() {
         if crate::utils::minecraft::parse_mc_version(inherits).is_some() {
             return Some(inherits.to_string());
@@ -632,7 +645,12 @@ fn find_real_minecraft_version(
             && let Ok(parent_content) = fs::read_to_string(&parent_json_path)
             && let Ok(parent_json) = serde_json::from_str::<Value>(&parent_content)
         {
-            return find_real_minecraft_version(inherits, &parent_json, versions_dir);
+            return find_real_minecraft_version_at_depth(
+                inherits,
+                &parent_json,
+                versions_dir,
+                depth + 1,
+            );
         }
         Some(inherits.to_string())
     } else {
@@ -1391,33 +1409,63 @@ pub async fn rename_instance(old_name: String, new_name: String) -> Result<(), L
     let renamed_json = old_dir.join(format!("{}.json", new_name));
     let old_jar = old_dir.join(format!("{}.jar", old_name));
 
+    let mut json_renamed = false;
     if old_json.exists() {
         fs::rename(&old_json, &renamed_json)
             .map_err(|e| LauncherError::Custom(format!("重命名版本 JSON 失败: {}", e)))?;
+        json_renamed = true;
     }
 
-    if old_jar.exists()
-        && let Err(e) = fs::rename(&old_jar, old_dir.join(format!("{}.jar", new_name)))
-    {
-        // jar 没改成，就把 JSON 名字改回去，尽量别留下半改状态
-        let _ = fs::rename(&renamed_json, &old_json);
-        return Err(LauncherError::Custom(format!(
-            "重命名客户端 jar 失败: {}",
-            e
-        )));
+    let mut jar_renamed = false;
+    if old_jar.exists() {
+        match fs::rename(&old_jar, old_dir.join(format!("{}.jar", new_name))) {
+            Ok(()) => jar_renamed = true,
+            // jar 没改成，就把 JSON 名字改回去，尽量别留下半改状态
+            Err(e) => {
+                if json_renamed {
+                    let _ = fs::rename(&renamed_json, &old_json);
+                }
+                return Err(LauncherError::Custom(format!(
+                    "重命名客户端 jar 失败: {}",
+                    e
+                )));
+            }
+        }
     }
 
     // 只有 JSON 真就位了才改写 id；解析失败直接报错，不再静默跳过
+    let mut id_rewritten = false;
     if renamed_json.exists() {
         let content = fs::read_to_string(&renamed_json)?;
         let mut json: Value = serde_json::from_str(&content)
             .map_err(|e| LauncherError::Custom(format!("版本 JSON 解析失败: {}", e)))?;
         json["id"] = Value::String(new_name.clone());
         fs::write(&renamed_json, serde_json::to_string_pretty(&json)?)?;
+        id_rewritten = true;
     }
 
-    fs::rename(&old_dir, &new_dir)
-        .map_err(|e| LauncherError::Custom(format!("重命名目录失败: {}", e)))?;
+    if let Err(e) = fs::rename(&old_dir, &new_dir) {
+        // 目录改名是最后一步：失败时把已改的文件名与 id 全部还原，
+        // 否则目录仍叫旧名、里面却已是 new_name.json，实例会直接从列表里消失
+        warn!("重命名实例目录失败，正在回滚文件名与 id: {}", e);
+        if id_rewritten
+            && let Some(mut json) = fs::read_to_string(&renamed_json)
+                .ok()
+                .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        {
+            json["id"] = Value::String(old_name.clone());
+            if let Ok(pretty) = serde_json::to_string_pretty(&json) {
+                let _ = fs::write(&renamed_json, pretty);
+            }
+        }
+        if json_renamed {
+            let _ = fs::rename(&renamed_json, &old_json);
+        }
+        if jar_renamed {
+            let _ = fs::rename(old_dir.join(format!("{}.jar", new_name)), &old_jar);
+        }
+        return Err(LauncherError::Custom(format!("重命名目录失败: {}", e)));
+    }
 
     let _ = config::rename_instance_last_played(&old_name, &new_name);
 

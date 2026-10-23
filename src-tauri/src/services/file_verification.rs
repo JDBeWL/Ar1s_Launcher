@@ -5,7 +5,7 @@
 
 use crate::errors::LauncherError;
 use crate::services::config::load_config;
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -71,8 +71,14 @@ pub fn validate_version_files_sync(version_id: String) -> Result<Vec<String>, La
 
     let mut versions_to_check = vec![version_json.clone()];
     let mut current_json = version_json.clone();
+    // 环形继承链会让下面的循环永不终止且列表无限膨胀，按版本 id 去重
+    let mut visited_inherits = std::collections::HashSet::new();
 
     while let Some(inherits_from) = current_json["inheritsFrom"].as_str() {
+        if !visited_inherits.insert(inherits_from.to_string()) {
+            warn!("版本继承链存在循环，停止追踪: {}", inherits_from);
+            break;
+        }
         debug!("检查继承版本: {}", inherits_from);
         let base_version_json_path = game_dir
             .join("versions")

@@ -355,7 +355,13 @@ pub async fn launch_minecraft(
         );
         override_path.clone()
     } else if config.auto_match_java {
-        if let Some(matched) = java::auto_match_java(&profile) {
+        // 候选装配可能触发全盘扫描 + 起 JVM 子进程探测（冷缓存时秒级），不能占着 async worker
+        let profile_for_match = profile.clone();
+        let matched =
+            tokio::task::spawn_blocking(move || java::auto_match_java(&profile_for_match))
+                .await
+                .map_err(|e| LauncherError::Custom(format!("Java 自动匹配任务异常终止: {}", e)))?;
+        if let Some(matched) = matched {
             emit(
                 "log-info",
                 format!("自动匹配 Java: {} (版本 {})", matched.path, matched.version),
@@ -375,14 +381,23 @@ pub async fn launch_minecraft(
         java::resolve_java_path(&config)?
     };
 
-    let mut java_version = java::detect_java_version(&java_path);
+    // 单次 JVM 子进程探测，冷缓存约几百毫秒，进阻塞池
+    let java_path_for_detect = java_path.clone();
+    let mut java_version =
+        tokio::task::spawn_blocking(move || java::detect_java_version(&java_path_for_detect))
+            .await
+            .map_err(|e| LauncherError::Custom(format!("Java 版本探测任务异常终止: {}", e)))?;
 
     // 三条分支选出来的 Java 都要过同一道判据；版本 JSON 读不到时不硬拦
     if profile.resolved
         && let Some(ver) = java_version
         && !java_requirement::java_allowed(&profile.requirement, ver)
     {
-        let candidates = java::collect_candidates(&config);
+        let config_for_candidates = config.clone();
+        let candidates =
+            tokio::task::spawn_blocking(move || java::collect_candidates(&config_for_candidates))
+                .await
+                .map_err(|e| LauncherError::Custom(format!("Java 候选扫描任务异常终止: {}", e)))?;
 
         match java::resolve_gate(
             &profile,
@@ -436,8 +451,13 @@ pub async fn launch_minecraft(
         );
     }
 
-    let java_is_32bit = crate::services::java::probe_java(&java_path)
-        .is_some_and(|probe| probe.arch == crate::services::java::JavaArch::Bits32);
+    let java_path_for_probe = java_path.clone();
+    let java_is_32bit = tokio::task::spawn_blocking(move || {
+        crate::services::java::probe_java(&java_path_for_probe)
+            .is_some_and(|probe| probe.arch == crate::services::java::JavaArch::Bits32)
+    })
+    .await
+    .map_err(|e| LauncherError::Custom(format!("Java 探测任务异常终止: {}", e)))?;
 
     let lwjgl_lib_path = natives_dir.to_string_lossy().to_string();
     let memory_mb = if config.auto_memory_enabled {

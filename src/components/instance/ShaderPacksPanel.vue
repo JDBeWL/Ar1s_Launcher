@@ -100,15 +100,22 @@ function backendHint(): string {
 }
 
 async function loadPacks() {
+  // 快速切换实例时旧实例的慢响应后到会覆盖新列表，之后按旧文件名操作就会写错目录
+  const target = props.instanceName;
   loading.value = true;
   error.value = '';
   try {
-    state.value = await shaderPackApi.getShaderPacks(props.instanceName);
+    const result = await shaderPackApi.getShaderPacks(target);
+    if (props.instanceName !== target) return;
+    state.value = result;
   } catch (e) {
+    if (props.instanceName !== target) return;
     logError('Failed to load shader packs', e, 'ShaderPacksPanel');
     error.value = getErrorMessage(e);
   } finally {
-    loading.value = false;
+    if (props.instanceName === target) {
+      loading.value = false;
+    }
   }
 }
 

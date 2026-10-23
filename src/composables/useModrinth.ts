@@ -61,7 +61,11 @@ export function useModrinth() {
     }
   }
 
+  // 筛选立即搜索与搜索词防抖搜索可并发，慢的旧响应后到会覆盖新结果
+  let modpackSearchSeq = 0;
+
   async function searchModpacksInternal() {
+    const seq = ++modpackSearchSeq;
     loadingModpacks.value = true;
     try {
       const offset = (modpackCurrentPage.value - 1) * modpackItemsPerPage;
@@ -76,16 +80,20 @@ export function useModrinth() {
         sortBy: sortBy.value,
       });
 
+      if (seq !== modpackSearchSeq) return;
       modpacks.value = result.hits || [];
       modpackTotalHits.value = result.total_hits || 0;
       modpackInitialLoad.value = false;
     } catch (error) {
+      if (seq !== modpackSearchSeq) return;
       logError('Failed to search modpacks', error, 'useModrinth');
       modpacks.value = [];
       modpackTotalHits.value = 0;
       modpackInitialLoad.value = false;
     } finally {
-      loadingModpacks.value = false;
+      if (seq === modpackSearchSeq) {
+        loadingModpacks.value = false;
+      }
     }
   }
 

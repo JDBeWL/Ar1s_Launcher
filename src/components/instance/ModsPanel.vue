@@ -51,15 +51,22 @@ const updateMap = computed(() => {
 const updatableCount = computed(() => updates.value.length);
 
 async function loadMods() {
+  // 快速切换实例时旧实例的慢响应后到会覆盖新列表，之后按旧文件名操作就会写错目录
+  const target = props.instanceName;
   loading.value = true;
   error.value = '';
   try {
-    mods.value = await instanceApi.getMods(props.instanceName);
+    const list = await instanceApi.getMods(target);
+    if (props.instanceName !== target) return;
+    mods.value = list;
   } catch (e) {
+    if (props.instanceName !== target) return;
     logError('Failed to load mods', e, 'ModsPanel');
     error.value = getErrorMessage(e);
   } finally {
-    loading.value = false;
+    if (props.instanceName === target) {
+      loading.value = false;
+    }
   }
 }
 

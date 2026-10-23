@@ -897,47 +897,50 @@ pub async fn validate_java_path(path: String) -> Result<bool, LauncherError> {
 }
 
 pub async fn get_java_version(path: String) -> Result<String, LauncherError> {
-    // 走探测缓存：设置页会为每个已检测安装各问一次，缓存后第二次起是纯内存读取
-    if let Some(probe) = probe_java(&path)
-        && let Some(raw) = probe.raw
-    {
-        return Ok(raw);
-    }
-
-    let resolved = resolve_java_exe(&path);
-
-    let mut command = Command::new(&resolved);
-    command.arg("-version");
-
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-
-    match command.output() {
-        Ok(output) => {
-            // Java 版本信息通常输出到 stderr
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let version_output = if stderr.contains("version") {
-                stderr
-            } else {
-                stdout
-            };
-
-            for line in version_output.lines() {
-                if line.contains("version") {
-                    if let Some(start) = line.find('"')
-                        && let Some(end) = line[start + 1..].find('"')
-                    {
-                        return Ok(line[start + 1..start + 1 + end].to_string());
-                    }
-                    return Ok(line.trim().to_string());
-                }
-            }
-
-            Err(LauncherError::Custom("无法解析 Java 版本".to_string()))
+    // 探测可能命中缓存（纯内存），冷缓存则要新起一个 JVM 子进程，整段进阻塞池
+    tokio::task::spawn_blocking(move || {
+        if let Some(probe) = probe_java(&path)
+            && let Some(raw) = probe.raw
+        {
+            return Ok(raw);
         }
-        Err(e) => Err(LauncherError::Custom(format!("无法获取 Java 版本: {}", e))),
-    }
+
+        let resolved = resolve_java_exe(&path);
+
+        let mut command = Command::new(&resolved);
+        command.arg("-version");
+
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+
+        let output = command
+            .output()
+            .map_err(|e| LauncherError::Custom(format!("无法获取 Java 版本: {}", e)))?;
+
+        // Java 版本信息通常输出到 stderr
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let version_output = if stderr.contains("version") {
+            stderr
+        } else {
+            stdout
+        };
+
+        for line in version_output.lines() {
+            if line.contains("version") {
+                if let Some(start) = line.find('"')
+                    && let Some(end) = line[start + 1..].find('"')
+                {
+                    return Ok(line[start + 1..start + 1 + end].to_string());
+                }
+                return Ok(line.trim().to_string());
+            }
+        }
+
+        Err(LauncherError::Custom("无法解析 Java 版本".to_string()))
+    })
+    .await
+    .map_err(|e| LauncherError::Custom(format!("Java 版本探测任务异常终止: {}", e)))?
 }
 
 /// 自动检测 Java 安装（同步，供配置加载使用）

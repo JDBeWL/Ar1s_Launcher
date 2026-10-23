@@ -266,7 +266,7 @@ impl ModpackInstaller {
         }
         .await;
 
-        finalize_install(&config, &targets, result)
+        finalize_install(&config, &targets, result).await
     }
 
     /// 本地导入：直接读取用户选中的 .mrpack，其余流程与在线安装一致
@@ -308,7 +308,7 @@ impl ModpackInstaller {
         }
         .await;
 
-        finalize_install(&config, &targets, result)
+        finalize_install(&config, &targets, result).await
     }
 
     /// 只读预览本地包，供安装页在真正落盘前展示信息
@@ -557,7 +557,9 @@ impl ModpackInstaller {
         fs::write(config_path, serde_json::to_string_pretty(&instance_config)?)?;
 
         if targets.extract_dir.exists() {
-            let _ = fs::remove_dir_all(&targets.extract_dir);
+            // 可能是几 GB 的 overrides 解压目录，删除耗时不可控，和上面的清理一样必须离开 async worker
+            let extract_dir = targets.extract_dir.clone();
+            let _ = tokio::task::spawn_blocking(move || fs::remove_dir_all(&extract_dir)).await;
         }
 
         send_progress(100, "整合包安装完成！", false);
@@ -986,7 +988,7 @@ fn ensure_instance_free(
 }
 
 /// 失败或被取消时回滚这次安装产生的文件
-fn finalize_install(
+async fn finalize_install(
     config: &crate::models::GameConfig,
     targets: &InstallTargets,
     result: Result<(), LauncherError>,
@@ -995,10 +997,12 @@ fn finalize_install(
         info!("安装失败或被取消，清理已创建的文件...");
 
         if targets.instance_dir.exists() {
-            if let Err(e) = fs::remove_dir_all(&targets.instance_dir) {
-                warn!("清理实例目录失败: {}", e);
-            } else {
-                info!("已清理实例目录: {}", targets.instance_dir.display());
+            // 整个实例目录（可能含 GB 级整合包内容）的删除耗时不可控，不能占着 async worker
+            let instance_dir = targets.instance_dir.clone();
+            match tokio::task::spawn_blocking(move || fs::remove_dir_all(&instance_dir)).await {
+                Ok(Ok(())) => info!("已清理实例目录: {}", targets.instance_dir.display()),
+                Ok(Err(e)) => warn!("清理实例目录失败: {}", e),
+                Err(e) => warn!("清理实例目录任务异常终止: {}", e),
             }
         }
 
@@ -1011,7 +1015,8 @@ fn finalize_install(
         }
 
         if targets.extract_dir.exists() {
-            let _ = fs::remove_dir_all(&targets.extract_dir);
+            let extract_dir = targets.extract_dir.clone();
+            let _ = tokio::task::spawn_blocking(move || fs::remove_dir_all(&extract_dir)).await;
         }
     }
 

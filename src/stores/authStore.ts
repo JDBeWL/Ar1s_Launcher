@@ -44,6 +44,13 @@ export const useAuthStore = defineStore('auth', () => {
         msUsername.value = status.username || '';
         msUuid.value = status.uuid || '';
         msExpiresAt.value = status.expiresAt || null;
+      } else {
+        // 另一实例登出或 token 失效时后端会报告未登录，本地状态要跟着回滚，
+        // 否则界面继续显示已登录，启动时才在令牌上失败
+        msLoggedIn.value = false;
+        msUsername.value = '';
+        msUuid.value = '';
+        msExpiresAt.value = null;
       }
     } catch (err) {
       logError('Failed to load auth status', err, 'AuthStore');

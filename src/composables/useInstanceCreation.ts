@@ -122,21 +122,29 @@ export function useInstanceCreation() {
     }
   }
 
+  // 快速切换 MC 版本/加载器时旧请求后到会覆盖新列表，还会把选中项设成旧版本的第一条，
+  // 之后点创建就把旧加载器版本号随新版本一起提交了；按发起顺序丢弃过期响应
+  let modLoaderVersionsSeq = 0;
+
   async function fetchModLoaderVersions() {
     if (!selectedVersion.value || !selectedModLoaderType.value || selectedModLoaderType.value === 'None') {
+      // 提前返回也要作废在途请求，否则它后到会把刚清空的状态又填回去
+      ++modLoaderVersionsSeq;
       modLoaderVersions.value = [];
       selectedModLoaderVersion.value = null;
       return;
     }
 
+    const seq = ++modLoaderVersionsSeq;
     loadingModLoaderVersions.value = true;
     selectedModLoaderVersion.value = null;
 
     try {
       const mcVersion = selectedVersion.value.id;
+      const loaderType = selectedModLoaderType.value;
       let result: (ForgeVersion | LoaderVersionInfo)[] = [];
 
-      switch (selectedModLoaderType.value) {
+      switch (loaderType) {
         case 'Forge':
           result = await api.loader.getForgeVersions(mcVersion);
           break;
@@ -151,16 +159,20 @@ export function useInstanceCreation() {
           break;
       }
 
+      if (seq !== modLoaderVersionsSeq) return;
       modLoaderVersions.value = result;
 
       if (result.length > 0) {
         selectedModLoaderVersion.value = result[0];
       }
     } catch (error) {
+      if (seq !== modLoaderVersionsSeq) return;
       logError(`Failed to fetch ${selectedModLoaderType.value} versions`, error, 'useInstanceCreation');
       modLoaderVersions.value = [];
     } finally {
-      loadingModLoaderVersions.value = false;
+      if (seq === modLoaderVersionsSeq) {
+        loadingModLoaderVersions.value = false;
+      }
     }
   }
 

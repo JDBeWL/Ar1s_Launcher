@@ -372,11 +372,28 @@ async fn resolve_and_download(
     }
 
     let mut results = Vec::with_capacity(handles.len());
+    // 不在第一个失败处直接返回：得先把剩余任务 abort 掉，
+    // 否则用户已经收到失败提示，后台还在继续往 mods 目录写文件
+    let mut first_error: Option<LauncherError> = None;
     for (index, handle) in handles {
-        let (installed_mod, next) = handle
-            .await
-            .map_err(|e| LauncherError::Custom(format!("模组下载任务异常终止: {}", e)))??;
-        results.push((index, installed_mod, next));
+        if first_error.is_some() {
+            handle.abort();
+            continue;
+        }
+        match handle.await {
+            Ok(Ok((installed_mod, next))) => results.push((index, installed_mod, next)),
+            Ok(Err(e)) => first_error = Some(e),
+            Err(e) => {
+                first_error = Some(LauncherError::Custom(format!(
+                    "模组下载任务异常终止: {}",
+                    e
+                )))
+            }
+        }
+    }
+
+    if let Some(e) = first_error {
+        return Err(e);
     }
 
     // 并发完成顺序不可控，按序号还原成本轮入参顺序

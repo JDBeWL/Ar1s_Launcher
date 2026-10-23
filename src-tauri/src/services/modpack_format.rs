@@ -159,7 +159,7 @@ pub fn read_index_from_archive(path: &Path) -> Result<ModrinthIndex, LauncherErr
         LauncherError::Custom(format!("无法读取整合包（可能不是 zip 格式）: {}", e))
     })?;
 
-    let mut entry = archive.by_name(INDEX_FILE).map_err(|_| {
+    let entry = archive.by_name(INDEX_FILE).map_err(|_| {
         LauncherError::Custom(format!("整合包缺少 {}，可能不是 Modrinth 格式", INDEX_FILE))
     })?;
 
@@ -171,7 +171,9 @@ pub fn read_index_from_archive(path: &Path) -> Result<ModrinthIndex, LauncherErr
     }
 
     let mut text = String::new();
-    entry.read_to_string(&mut text)?;
+    // 上面的上限依赖 zip 头声明的 size，可以造假；按实际解压出的字节流再限一次，
+    // 恶意包把索引炸到几百 MB 时最多读 MAX_INDEX_BYTES 就截断
+    entry.take(MAX_INDEX_BYTES).read_to_string(&mut text)?;
     let index: ModrinthIndex = serde_json::from_str(text.trim_start_matches('\u{feff}'))
         .map_err(|e| LauncherError::Custom(format!("解析 {} 失败: {}", INDEX_FILE, e)))?;
 

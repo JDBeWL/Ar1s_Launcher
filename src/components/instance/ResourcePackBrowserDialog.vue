@@ -38,9 +38,13 @@ const PAGE_SIZE = 10;
 
 const totalPages = computed(() => Math.ceil(totalHits.value / PAGE_SIZE));
 
+// 防抖挡不住「翻页 + 输入」并发的慢响应，旧响应后到会覆盖新结果，按发起顺序丢弃过期响应
+let searchSeq = 0;
+
 async function search() {
   if (!props.modelValue) return;
 
+  const seq = ++searchSeq;
   loading.value = true;
   error.value = '';
   try {
@@ -50,15 +54,19 @@ async function search() {
       offset: (page.value - 1) * PAGE_SIZE,
       sortBy: 'relevance',
     });
+    if (seq !== searchSeq) return;
     results.value = result.hits || [];
     totalHits.value = result.total_hits || 0;
   } catch (e) {
+    if (seq !== searchSeq) return;
     logError('Failed to search resource packs', e, 'ResourcePackBrowserDialog');
     error.value = getErrorMessage(e);
     results.value = [];
     totalHits.value = 0;
   } finally {
-    loading.value = false;
+    if (seq === searchSeq) {
+      loading.value = false;
+    }
   }
 }
 

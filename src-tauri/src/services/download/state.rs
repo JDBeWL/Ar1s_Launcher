@@ -60,6 +60,9 @@ impl DownloadState {
 
     pub fn mark_completed(&mut self, url: String) {
         self.partial_downloads.remove(&url);
+        // 上次会话标记过失败的文件这次成功了，要把失败记录一并撤掉：
+        // 否则收尾时会误报「部分失败」，状态文件也永远清不掉
+        self.failed_files.remove(&url);
         self.completed_files.insert(url);
         self.mark_dirty();
     }

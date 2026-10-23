@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { configApi } from '../../services';
 import { useSettingsStore } from '../../stores/settings';
+import { useDebounceFn } from '../../composables/useDebounce';
 import { logError } from '../../utils/logger';
 import type { JvmAdvancedOptions, GcStrategy } from '../../types/events';
 
@@ -137,11 +138,16 @@ function resetToDefaults() {
   metaspaceEnabled.value = false;
 }
 
+// extraArgs 是逐字符输入的 textarea：不防抖的话每敲一个字就是两次 IPC（保存 + 预览刷新）
+const debouncedSaveOptions = useDebounceFn(() => {
+  void saveOptions();
+}, 500);
+
 watch(
   options,
-  async () => {
+  () => {
     if (!isInitialized.value) return;
-    await saveOptions();
+    debouncedSaveOptions.call();
   },
   { deep: true },
 );

@@ -816,6 +816,13 @@ pub(crate) async fn download_library_from_profile(
     if let Some(artifact) = library.get("downloads").and_then(|d| d.get("artifact"))
         && let Some(path) = artifact.get("path").and_then(|p| p.as_str())
     {
+        // path 来自 installer 的 profile（镜像/安装包可控），穿越段会让 join 逃出 libraries/
+        if !file_utils::is_safe_relative_path(path) {
+            return Err(LauncherError::Custom(format!(
+                "库路径可疑，拒绝下载: {}",
+                path
+            )));
+        }
         let target_path = libraries_dir.join(path);
         if target_path.exists() {
             return Ok(());
@@ -853,6 +860,13 @@ pub(crate) async fn download_library_from_profile(
     }
 
     if let Some(maven_path) = maven_name_to_path(name, None, "jar") {
+        // 坐标同样来自 profile，`..` 段在转路径后同样能逃出 libraries/
+        if !file_utils::is_safe_relative_path(&maven_path) {
+            return Err(LauncherError::Custom(format!(
+                "库坐标可疑，拒绝下载: {}",
+                name
+            )));
+        }
         let target_path = libraries_dir.join(&maven_path);
         if target_path.exists() {
             return Ok(());
@@ -954,51 +968,64 @@ async fn manual_install_old_forge(
         serde_json::to_string_pretty(&version_info)?,
     )?;
 
-    let file = fs::File::open(installer_path)?;
-    let mut archive = ZipArchive::new(file)?;
+    // 解压 maven/ 与 universal.jar 是纯同步的批量写盘，不能占着 async worker
+    {
+        let installer = installer_path.to_path_buf();
+        let libs = libraries_dir.clone();
+        let mc = forge_version.mcversion.clone();
+        let ver = forge_version.version.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), LauncherError> {
+            let file = fs::File::open(&installer)?;
+            let mut archive = ZipArchive::new(file)?;
 
-    for i in 0..archive.len() {
-        let mut file = match archive.by_index(i) {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
-        let name = file.name()?.to_string();
+            for i in 0..archive.len() {
+                let mut file = match archive.by_index(i) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                let name = file.name()?.to_string();
 
-        if name.contains("..") || name.starts_with('/') || name.starts_with('\\') {
-            log::warn!("跳过可疑的 zip 条目: {}", name);
-            continue;
-        }
-
-        if name.starts_with("maven/") && !name.ends_with('/') {
-            if let Some(rel) = name.strip_prefix("maven/") {
-                if rel.contains("..") {
-                    log::warn!("跳过可疑的 maven 路径: {}", name);
+                if name.contains("..") || name.starts_with('/') || name.starts_with('\\') {
+                    log::warn!("跳过可疑的 zip 条目: {}", name);
                     continue;
                 }
-                let target = libraries_dir.join(rel);
-                if let Some(p) = target.parent() {
-                    fs::create_dir_all(p).ok();
-                }
-                let mut buf = Vec::new();
-                if file.read_to_end(&mut buf).is_ok() {
-                    fs::write(&target, &buf).ok();
+
+                if name.starts_with("maven/") && !name.ends_with('/') {
+                    if let Some(rel) = name.strip_prefix("maven/") {
+                        if rel.contains("..") {
+                            log::warn!("跳过可疑的 maven 路径: {}", name);
+                            continue;
+                        }
+                        let target = libs.join(rel);
+                        if let Some(p) = target.parent() {
+                            fs::create_dir_all(p).ok();
+                        }
+                        let mut buf = Vec::new();
+                        if file.read_to_end(&mut buf).is_ok() {
+                            fs::write(&target, &buf).ok();
+                        }
+                    }
+                } else if name.ends_with("-universal.jar") && !name.contains('/') {
+                    let mut buf = Vec::new();
+                    if file.read_to_end(&mut buf).is_ok() {
+                        let forge_lib = format!(
+                            "net/minecraftforge/forge/{mc}-{v}/forge-{mc}-{v}-universal.jar",
+                            mc = mc,
+                            v = ver
+                        );
+                        let target = libs.join(&forge_lib);
+                        if let Some(p) = target.parent() {
+                            fs::create_dir_all(p).ok();
+                        }
+                        fs::write(&target, &buf).ok();
+                    }
                 }
             }
-        } else if name.ends_with("-universal.jar") && !name.contains('/') {
-            let mut buf = Vec::new();
-            if file.read_to_end(&mut buf).is_ok() {
-                let forge_lib = format!(
-                    "net/minecraftforge/forge/{mc}-{v}/forge-{mc}-{v}-universal.jar",
-                    mc = forge_version.mcversion,
-                    v = forge_version.version
-                );
-                let target = libraries_dir.join(&forge_lib);
-                if let Some(p) = target.parent() {
-                    fs::create_dir_all(p).ok();
-                }
-                fs::write(&target, &buf).ok();
-            }
-        }
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| LauncherError::Custom(format!("解压任务异常终止: {}", e)))??;
     }
 
     // 加载器本体是启动的必要条件，缺了就别报成功。
@@ -1106,59 +1133,69 @@ async fn manual_install_new_forge(
         }
     }
 
-    let file = fs::File::open(installer_path)?;
-    let mut archive = ZipArchive::new(file)?;
+    // 新版 installer 内嵌的 maven/ 可能几百 MB，逐条解压是纯同步写盘，不能占着 async worker
+    {
+        let installer = installer_path.to_path_buf();
+        let libs = libraries_dir.clone();
+        let mc = forge_version.mcversion.clone();
+        let ver = forge_version.version.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), LauncherError> {
+            let file = fs::File::open(&installer)?;
+            let mut archive = ZipArchive::new(file)?;
 
-    for i in 0..archive.len() {
-        let mut file = match archive.by_index(i) {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
-        let name = file.name()?.to_string();
+            for i in 0..archive.len() {
+                let mut file = match archive.by_index(i) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                let name = file.name()?.to_string();
 
-        if name.contains("..") || name.starts_with('/') || name.starts_with('\\') {
-            log::warn!("跳过可疑的 zip 条目: {}", name);
-            continue;
-        }
-
-        if name.starts_with("maven/") && !name.ends_with('/') {
-            if let Some(rel) = name.strip_prefix("maven/") {
-                if rel.contains("..") {
-                    log::warn!("跳过可疑的 maven 路径: {}", name);
+                if name.contains("..") || name.starts_with('/') || name.starts_with('\\') {
+                    log::warn!("跳过可疑的 zip 条目: {}", name);
                     continue;
                 }
-                let target = libraries_dir.join(rel);
-                if let Some(p) = target.parent() {
-                    fs::create_dir_all(p).ok();
+
+                if name.starts_with("maven/") && !name.ends_with('/') {
+                    if let Some(rel) = name.strip_prefix("maven/") {
+                        if rel.contains("..") {
+                            log::warn!("跳过可疑的 maven 路径: {}", name);
+                            continue;
+                        }
+                        let target = libs.join(rel);
+                        if let Some(p) = target.parent() {
+                            fs::create_dir_all(p).ok();
+                        }
+                        let mut buf = Vec::new();
+                        if file.read_to_end(&mut buf).is_ok() {
+                            fs::write(&target, &buf).ok();
+                        }
+                    }
+                } else if name.starts_with("data/")
+                    && !name.ends_with('/')
+                    && let Some(rel) = name.strip_prefix("data/")
+                {
+                    if rel.contains("..") {
+                        log::warn!("跳过可疑的 data 路径: {}", name);
+                        continue;
+                    }
+                    let target = libs
+                        .join("net/minecraftforge/forge")
+                        .join(format!("{}-{}", mc, ver))
+                        .join(rel);
+                    if let Some(p) = target.parent() {
+                        fs::create_dir_all(p).ok();
+                    }
+                    let mut buf = Vec::new();
+                    if file.read_to_end(&mut buf).is_ok() {
+                        fs::write(&target, &buf).ok();
+                    }
                 }
-                let mut buf = Vec::new();
-                if file.read_to_end(&mut buf).is_ok() {
-                    fs::write(&target, &buf).ok();
-                }
             }
-        } else if name.starts_with("data/")
-            && !name.ends_with('/')
-            && let Some(rel) = name.strip_prefix("data/")
-        {
-            if rel.contains("..") {
-                log::warn!("跳过可疑的 data 路径: {}", name);
-                continue;
-            }
-            let target = libraries_dir
-                .join("net/minecraftforge/forge")
-                .join(format!(
-                    "{}-{}",
-                    forge_version.mcversion, forge_version.version
-                ))
-                .join(rel);
-            if let Some(p) = target.parent() {
-                fs::create_dir_all(p).ok();
-            }
-            let mut buf = Vec::new();
-            if file.read_to_end(&mut buf).is_ok() {
-                fs::write(&target, &buf).ok();
-            }
-        }
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| LauncherError::Custom(format!("解压任务异常终止: {}", e)))??;
     }
 
     let forge_lib_dir = libraries_dir.join("net/minecraftforge/forge").join(format!(

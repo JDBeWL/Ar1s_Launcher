@@ -169,7 +169,15 @@ pub async fn install_neoforge(
         }
     }
 
-    extract_installer_files(&installer_path, &libraries_dir, &data_dir)?;
+    // installer 内嵌的 maven/ 可达上百 MB，逐条解压是纯同步写盘，不能占着 async worker
+    {
+        let installer = installer_path.clone();
+        let libs = libraries_dir.clone();
+        let data = data_dir.clone();
+        tokio::task::spawn_blocking(move || extract_installer_files(&installer, &libs, &data))
+            .await
+            .map_err(|e| LauncherError::Custom(format!("解压任务异常终止: {}", e)))??;
+    }
 
     if let Some(profile) = install_profile.as_ref() {
         forge::check_cancelled(cancel)?;

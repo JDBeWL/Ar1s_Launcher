@@ -172,6 +172,23 @@ pub fn find_jar_version(
     version_json: &serde_json::Value,
     game_dir: &std::path::Path,
 ) -> Result<String, crate::errors::LauncherError> {
+    find_jar_version_at_depth(version_json, game_dir, 0)
+}
+
+/// 正常继承链只有一两层；环形 JSON 会无限递归直到栈溢出，深度上限兜底
+const MAX_INHERITS_DEPTH: usize = 16;
+
+fn find_jar_version_at_depth(
+    version_json: &serde_json::Value,
+    game_dir: &std::path::Path,
+    depth: usize,
+) -> Result<String, crate::errors::LauncherError> {
+    if depth > MAX_INHERITS_DEPTH {
+        return Err(crate::errors::LauncherError::Custom(
+            "版本继承链过深或存在循环".to_string(),
+        ));
+    }
+
     if let Some(jar) = version_json["jar"].as_str() {
         return Ok(jar.to_string());
     }
@@ -185,7 +202,7 @@ pub fn find_jar_version(
         if parent_json_path.exists() {
             let parent_str = std::fs::read_to_string(&parent_json_path)?;
             let parent_json: serde_json::Value = serde_json::from_str(&parent_str)?;
-            return find_jar_version(&parent_json, game_dir);
+            return find_jar_version_at_depth(&parent_json, game_dir, depth + 1);
         }
 
         return Ok(inherits_from.to_string());
