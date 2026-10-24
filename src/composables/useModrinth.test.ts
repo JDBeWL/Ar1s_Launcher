@@ -54,4 +54,31 @@ describe('useModrinth 搜索提交', () => {
     expect(search).toHaveBeenCalledTimes(1);
     expect(search).toHaveBeenCalledWith(expect.objectContaining({ query: undefined, offset: 0 }));
   });
+
+  it('慢的旧请求后到不能覆盖新搜索结果', async () => {
+    const { searchModpacks, modpacks, modpackTotalHits, loadingModpacks } = useModrinth();
+
+    let resolveOld!: (value: unknown) => void;
+    search.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }) as never,
+    );
+    const oldRequest = searchModpacks();
+
+    search.mockResolvedValueOnce({ hits: [{ slug: 'new' }], total_hits: 1 } as never);
+    await searchModpacks();
+
+    expect(modpacks.value).toEqual([{ slug: 'new' }]);
+    expect(modpackTotalHits.value).toBe(1);
+    expect(loadingModpacks.value).toBe(false);
+
+    resolveOld({ hits: [{ slug: 'old' }], total_hits: 99 });
+    await oldRequest;
+
+    expect(modpacks.value).toEqual([{ slug: 'new' }]);
+    expect(modpackTotalHits.value).toBe(1);
+    expect(loadingModpacks.value).toBe(false);
+  });
 });

@@ -35,4 +35,16 @@ describe('useInstanceScope', () => {
 
     expect(scope.isCurrent(task)).toBe(false);
   });
+
+  it('切换实例后旧任务延迟返回同样失效', async () => {
+    const name = ref('A');
+    const scope = useInstanceScope(() => name.value);
+    const task = scope.begin();
+
+    await Promise.resolve();
+    name.value = 'B';
+    await Promise.resolve();
+
+    expect(scope.isCurrent(task)).toBe(false);
+  });
 });

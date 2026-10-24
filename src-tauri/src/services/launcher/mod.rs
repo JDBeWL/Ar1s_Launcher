@@ -362,7 +362,14 @@ pub async fn launch_minecraft(
         .map_err(|e| LauncherError::Custom(format!("构建启动参数任务异常终止: {}", e)))?
     };
 
-    let profile = java::profile_for(&options.version, &game_dir);
+    // 判据要打开 mods 下每个 jar 抽样读 class 版本，大型实例是秒级纯同步读盘
+    let profile = {
+        let version = options.version.clone();
+        let game_dir = game_dir.clone();
+        tokio::task::spawn_blocking(move || java::profile_for(&version, &game_dir))
+            .await
+            .map_err(|e| LauncherError::Custom(format!("模组扫描任务异常终止: {}", e)))?
+    };
 
     let mut java_path = if let Some(ref override_path) = options.override_java_path {
         emit(

@@ -369,34 +369,45 @@ async fn preverify_existing(
         .map(|count| count.get())
         .unwrap_or(4)
         .clamp(1, 4);
-    let verified = Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
 
-    for chunk in candidates.chunks(candidates.len().div_ceil(workers).max(1)) {
-        if !state.load(Ordering::Acquire) || global_cancel.load(Ordering::Acquire) {
-            break;
+    // 分片大小按并行度切，但同时只保留 workers 个哈希任务在跑
+    let mut chunks = candidates
+        .chunks(candidates.len().div_ceil(workers).max(1))
+        .map(|chunk| chunk.to_vec());
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut verified = std::collections::HashSet::new();
+
+    loop {
+        while tasks.len() < workers {
+            if !state.load(Ordering::Acquire) || global_cancel.load(Ordering::Acquire) {
+                tasks.abort_all();
+                debug!("预校验已取消，跳过剩余文件");
+                return verified;
+            }
+            let Some(chunk) = chunks.next() else { break };
+            tasks.spawn_blocking(move || {
+                chunk
+                    .into_iter()
+                    .filter(|job| {
+                        crate::utils::file_utils::verify_file(
+                            &job.path,
+                            job.hash.as_deref(),
+                            job.size,
+                        )
+                        .unwrap_or(false)
+                    })
+                    .map(|job| job.url)
+                    .collect::<Vec<_>>()
+            });
         }
 
-        let chunk = chunk.to_vec();
-        let verified = verified.clone();
-
-        let handle = tokio::task::spawn_blocking(move || {
-            chunk
-                .into_iter()
-                .filter(|job| {
-                    crate::utils::file_utils::verify_file(&job.path, job.hash.as_deref(), job.size)
-                        .unwrap_or(false)
-                })
-                .map(|job| job.url)
-                .collect::<Vec<_>>()
-        });
-
-        // 各分片独立跑完，不能因为一个 join 失败就丢掉其他分片的结果
-        if let Ok(urls) = handle.await {
-            verified.lock().await.extend(urls);
+        // 各分片独立跑完，不能因为一个失败就丢掉其他分片的结果
+        match tasks.join_next().await {
+            Some(Ok(urls)) => verified.extend(urls),
+            Some(Err(e)) => warn!("预校验任务异常终止: {}", e),
+            None => break,
         }
     }
-
-    let verified = verified.lock().await.clone();
     debug!("预校验通过 {} 个已在盘上的文件", verified.len());
     verified
 }
