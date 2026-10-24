@@ -837,9 +837,9 @@ async function install() {
   awaitingPostInstall.value = false;
   manualDownloads.value = [];
 
-  await installSubscriptions.subscribeAll();
-
   try {
+    // 订阅失败也要走 catch/finally，别让 installing 一直停在任务中
+    await installSubscriptions.subscribeAll();
     if (isLocal.value) {
       const warnings = await modpackApi.installLocalModpack({
         filePath: localFilePath,

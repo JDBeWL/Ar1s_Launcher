@@ -269,9 +269,10 @@ export function useInstanceCreation() {
     progressIndeterminate.value = true;
     progressText.value = translate('customInstall.preparingInstall');
 
-    await installProgressSub.subscribe();
-
     try {
+      // 订阅失败也要走 catch/finally，别把 installing 和进度层一直卡住
+      await installProgressSub.subscribe();
+
       const payload: {
         newInstanceName: string;
         baseVersionId: string;
@@ -342,8 +343,8 @@ export function useInstanceCreation() {
         progressValue.value = 0;
         progressIndeterminate.value = true;
         progressText.value = translate('customInstall.completingFiles');
-        await downloadProgressSub.subscribe();
         try {
+          await downloadProgressSub.subscribe();
           const mirror = settingsStore.downloadMirror || undefined;
           await api.version.downloadVersion(finalInstanceName, mirror);
         } catch (error) {

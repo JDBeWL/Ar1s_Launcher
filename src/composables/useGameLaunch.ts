@@ -134,9 +134,9 @@ export function useGameLaunch() {
       percent: 0,
     };
 
-    await repairEventSub.subscribe();
-
     try {
+      // 订阅失败也要走 finally，否则 isRepairing 会一直卡在任务中
+      await repairEventSub.subscribe();
       const mirror = settingsStore.downloadMirror || undefined;
 
       await versionApi.downloadVersion(instanceName, mirror);

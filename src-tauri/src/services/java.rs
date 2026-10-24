@@ -6,8 +6,9 @@
 use crate::{LauncherError, update_config_async};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, Instant};
 
@@ -79,6 +80,10 @@ static JAVA_PROBE_CACHE: LazyLock<RwLock<HashMap<String, CachedProbe>>> =
 
 const JAVA_PROBE_DURATION: Duration = Duration::from_secs(6 * 3600);
 
+/// 单次 `java -version` 探测的上限：正常 JVM 是百毫秒级，坏掉的 exe 不能把扫描拖死
+const JAVA_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const JAVA_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
 pub fn invalidate_java_cache() {
     if let Ok(mut cache) = JAVA_CACHE.write() {
         *cache = None;
@@ -130,17 +135,78 @@ fn quoted_version(text: &str) -> Option<String> {
 }
 
 fn run_capture(exe: &Path, args: &[&str]) -> Option<(String, String)> {
+    run_capture_with_timeout(exe, args, JAVA_PROBE_TIMEOUT).ok()
+}
+
+enum CaptureFailure {
+    Timeout,
+    Spawn,
+    Io,
+}
+
+/// 同步等子进程带超时：`Command::output()` 没有超时，异常 Java 能让探测永久卡住。
+/// stdout/stderr 各用一个读线程，避免输出超过管道缓冲时子进程阻塞、被误判超时。
+fn run_capture_with_timeout(
+    exe: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<(String, String), CaptureFailure> {
     let mut command = Command::new(exe);
-    command.args(args);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
 
-    let output = command.output().ok()?;
-    Some((
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
+    let mut child = command.spawn().map_err(|_| CaptureFailure::Spawn)?;
+    let stdout = child.stdout.take().ok_or(CaptureFailure::Spawn)?;
+    let stderr = child.stderr.take().ok_or(CaptureFailure::Spawn)?;
+    let stdout_reader = std::thread::spawn(move || read_pipe(stdout));
+    let stderr_reader = std::thread::spawn(move || read_pipe(stderr));
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                log::warn!(
+                    "Java 探测超时（{} 秒），已终止: {}",
+                    timeout.as_secs(),
+                    exe.display()
+                );
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(CaptureFailure::Timeout);
+            }
+            Ok(None) => std::thread::sleep(JAVA_PROBE_POLL_INTERVAL),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                log::warn!("等待 Java 探测进程失败: {}", error);
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(CaptureFailure::Io);
+            }
+        }
+    }
+
+    let stdout = stdout_reader.join().map_err(|_| CaptureFailure::Io)?;
+    let stderr = stderr_reader.join().map_err(|_| CaptureFailure::Io)?;
+    Ok((
+        String::from_utf8_lossy(&stderr).into_owned(),
+        String::from_utf8_lossy(&stdout).into_owned(),
     ))
+}
+
+fn read_pipe(mut pipe: impl Read) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let _ = pipe.read_to_end(&mut bytes);
+    bytes
 }
 
 /// 从 `-XshowSettings:properties` 的输出里取一个键。
@@ -155,23 +221,40 @@ fn property_value(text: &str, key: &str) -> Option<String> {
 
 /// 一次调用同时拿 java.version、os.arch 与 java.home；老 JRE 不认 `-XshowSettings` 时退回 `-version`
 fn probe_uncached(exe: &Path) -> Option<JavaProbe> {
-    if let Some((stderr, stdout)) = run_capture(exe, &["-XshowSettings:properties", "-version"]) {
-        let text = format!("{}\n{}", stderr, stdout);
+    match run_capture_with_timeout(
+        exe,
+        &["-XshowSettings:properties", "-version"],
+        JAVA_PROBE_TIMEOUT,
+    ) {
+        Ok((stderr, stdout)) => {
+            let text = format!("{}\n{}", stderr, stdout);
 
-        if let Some(raw) = property_value(&text, "java.version") {
-            return Some(JavaProbe {
-                version: parse_major(&raw),
-                raw: Some(raw),
-                arch: property_value(&text, "os.arch")
-                    .map(|value| parse_arch(&value))
-                    .unwrap_or(JavaArch::Unknown),
-                home: property_value(&text, "java.home"),
-            });
+            if let Some(raw) = property_value(&text, "java.version") {
+                return Some(JavaProbe {
+                    version: parse_major(&raw),
+                    raw: Some(raw),
+                    arch: property_value(&text, "os.arch")
+                        .map(|value| parse_arch(&value))
+                        .unwrap_or(JavaArch::Unknown),
+                    home: property_value(&text, "java.home"),
+                });
+            }
         }
+        // 超时的进程已经杀掉，换参数再来一轮只会再等一个超时
+        Err(CaptureFailure::Timeout) => return None,
+        Err(_) => {}
     }
 
-    let (stderr, stdout) = run_capture(exe, &["-version"])
-        .or_else(|| run_capture(exe, &["-XshowSettings:properties", "-version"]))?;
+    let (stderr, stdout) = match run_capture_with_timeout(exe, &["-version"], JAVA_PROBE_TIMEOUT) {
+        Ok(output) => output,
+        Err(CaptureFailure::Timeout) => return None,
+        Err(_) => run_capture_with_timeout(
+            exe,
+            &["-XshowSettings:properties", "-version"],
+            JAVA_PROBE_TIMEOUT,
+        )
+        .ok()?,
+    };
     let text = format!("{}\n{}", stderr, stdout);
     let raw = quoted_version(&text)?;
 
@@ -887,13 +970,20 @@ pub async fn set_java_path_command(path: String) -> Result<(), LauncherError> {
 
 /// 验证 Java 路径，支持相对路径、安装目录（含 bin/）与 PATH 上的 java
 pub async fn validate_java_path(path: String) -> Result<bool, LauncherError> {
-    if path == "java" || path == "java.exe" {
-        let java_cmd = if cfg!(windows) { "java.exe" } else { "java" };
-        return Ok(find_java_in_path(java_cmd));
-    }
+    // 验证要起子进程，不能占着 async worker；超时由 run_capture 统一兜底
+    let result = tokio::task::spawn_blocking(move || {
+        if path == "java" || path == "java.exe" {
+            let java_cmd = if cfg!(windows) { "java.exe" } else { "java" };
+            return find_java_in_path(java_cmd);
+        }
 
-    let exe = resolve_java_exe(&path);
-    Ok(exe.is_file() && is_valid_java_executable(&exe))
+        let exe = resolve_java_exe(&path);
+        exe.is_file() && is_valid_java_executable(&exe)
+    })
+    .await
+    .map_err(|e| LauncherError::Custom(format!("Java 验证任务异常终止: {}", e)))?;
+
+    Ok(result)
 }
 
 pub async fn get_java_version(path: String) -> Result<String, LauncherError> {
@@ -906,20 +996,12 @@ pub async fn get_java_version(path: String) -> Result<String, LauncherError> {
         }
 
         let resolved = resolve_java_exe(&path);
-
-        let mut command = Command::new(&resolved);
-        command.arg("-version");
-
-        #[cfg(windows)]
-        command.creation_flags(CREATE_NO_WINDOW);
-
-        let output = command
-            .output()
-            .map_err(|e| LauncherError::Custom(format!("无法获取 Java 版本: {}", e)))?;
+        // 复用带超时的捕获，别在这里另开一条没有上限的 Command::output()
+        let Some((stderr, stdout)) = run_capture(&resolved, &["-version"]) else {
+            return Err(LauncherError::Custom("无法获取 Java 版本".to_string()));
+        };
 
         // Java 版本信息通常输出到 stderr
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
         let version_output = if stderr.contains("version") {
             stderr
         } else {
@@ -1027,6 +1109,45 @@ mod tests {
         property_value, quoted_version, real_java_exe,
     };
     use std::fs;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn test_run_capture_returns_output() {
+        #[cfg(windows)]
+        let (program, args) = ("cmd", vec!["/C", "echo", "hello"]);
+        #[cfg(not(windows))]
+        let (program, args) = ("sh", vec!["-c", "echo hello"]);
+
+        let (stderr, stdout) =
+            super::run_capture(Path::new(program), &args).expect("capture should succeed");
+        assert!(
+            stdout.contains("hello"),
+            "stdout: {stdout}, stderr: {stderr}"
+        );
+    }
+
+    #[test]
+    fn test_run_capture_times_out_and_terminates_child() {
+        #[cfg(windows)]
+        let (program, args) = ("ping", vec!["-n", "10", "127.0.0.1"]);
+        #[cfg(not(windows))]
+        let (program, args) = ("sleep", vec!["5"]);
+
+        let started = Instant::now();
+        let result =
+            super::run_capture_with_timeout(Path::new(program), &args, Duration::from_millis(200));
+
+        assert!(result.is_err(), "超时的探测必须返回错误");
+        assert!(
+            matches!(result, Err(super::CaptureFailure::Timeout)),
+            "超时必须报告 Timeout"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "超时后没有及时终止子进程"
+        );
+    }
 
     /// 白名单只决定「要不要再往下钻一层」，漏掉发行商就会少找到一份 Java
     #[test]
