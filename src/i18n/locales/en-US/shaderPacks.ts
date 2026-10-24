@@ -88,7 +88,7 @@ export default {
     title: 'Install shader packs',
     close: 'Close',
     searchLabel: 'Search shader packs',
-    searchPlaceholder: 'Enter a name, e.g. Complementary',
+    searchPlaceholder: 'Enter a name, e.g. Complementary (press Enter)',
     activateAfterInstall: 'Enable after install',
     retry: 'Retry',
     empty: 'No shader packs match this game version',

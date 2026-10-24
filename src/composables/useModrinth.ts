@@ -1,6 +1,6 @@
 /**
  * 整合包搜索
- * 搜索词与版本、加载器、分类、排序联动加分页，输入变化 300ms 防抖；
+ * 搜索词按回车提交，版本、加载器、分类、排序切换时立即重查并回到第一页；
  * source 切换数据源：Modrinth 官方 API 或 CurseForge（麦块开放 API 中转），
  * 传 getter 保持响应式——平台切换后搜索与分类选项都要跟着换
  */
@@ -8,7 +8,6 @@ import { ref, computed, toValue, watch } from 'vue';
 import type { MaybeRefOrGetter } from 'vue';
 import { api } from '../services';
 import { translate } from '../i18n';
-import { useDebounceFn } from './useDebounce';
 import { logError } from '../utils/logger';
 import { compareVersionDesc } from '../utils/format';
 import type { ModrinthModpack } from '../types/events';
@@ -148,21 +147,18 @@ export function useModrinth(source: MaybeRefOrGetter<ModpackSource> = 'modrinth'
     }
   }
 
-  const debouncedSearch = useDebounceFn(searchModpacksInternal, 300);
-
   async function searchModpacks() {
     await searchModpacksInternal();
   }
 
-  function searchModpacksDebounced() {
-    debouncedSearch.call();
+  function submitModpackSearch() {
+    modpackCurrentPage.value = 1;
+    return searchModpacks();
   }
 
-  watch(modpackSearchQuery, () => {
-    if (!modpackInitialLoad.value) {
-      modpackCurrentPage.value = 1;
-      searchModpacksDebounced();
-    }
+  // 清空搜索词时直接回到完整列表，不必再按一次回车
+  watch(modpackSearchQuery, (value) => {
+    if (!value) submitModpackSearch();
   });
 
   watch([selectedGameVersion, selectedLoader, selectedCategory, sortBy], () => {
@@ -195,7 +191,7 @@ export function useModrinth(source: MaybeRefOrGetter<ModpackSource> = 'modrinth'
     modpackSortOptions,
     fetchGameVersions,
     searchModpacks,
-    searchModpacksDebounced,
+    submitModpackSearch,
     onModpackPageChange,
   };
 }

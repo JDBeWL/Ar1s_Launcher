@@ -375,7 +375,7 @@ pub(crate) async fn download_to_file(
     let response = download_with_retry(url, client, 2).await?;
 
     if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).ok();
+        fs::create_dir_all(parent)?;
     }
 
     // 先写临时文件再改名：校验失败时不能留下半截 jar 冒充已下载
@@ -681,18 +681,40 @@ async fn download_library(
     lib_name: &str,
 ) -> Result<(), LauncherError> {
     let target_path = libraries_dir.join(rel_path);
+    let client = download::get_http_client();
+
+    // maven 的 .sha1 旁车文件是这类预置库唯一能拿到的声明值；取不到就只能做 ZIP 头校验
+    let expected_sha1 = if target_path.exists() {
+        let mut found = None;
+        for url in &sources {
+            if let Some(sha1) = download_sha1(&client, url).await {
+                found = Some(sha1);
+                break;
+            }
+        }
+        found
+    } else {
+        None
+    };
 
     if target_path.exists() {
-        return Ok(());
+        if verify_existing_library(&target_path, expected_sha1.clone()).await? {
+            return Ok(());
+        }
+        warn!(
+            "Forge: {} 已存在的文件校验失败，重新下载: {}",
+            lib_name,
+            target_path.display()
+        );
+        fs::remove_file(&target_path)?;
     }
 
     if let Some(parent) = target_path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let client = download::get_http_client();
     for url in &sources {
-        match download_to_file(url, &client, &target_path, None, true).await {
+        match download_to_file(url, &client, &target_path, expected_sha1.as_deref(), true).await {
             Ok(true) => {
                 info!("Forge: {} 下载成功", lib_name);
                 return Ok(());
@@ -709,6 +731,48 @@ async fn download_library(
         "所有 {} 下载源均失败",
         lib_name
     )))
+}
+
+/// 已有文件按声明的 SHA1 校验；没有 SHA1 时至少确认它是一个完整的 ZIP，
+/// 避免半截 jar 或镜像错误页被当成已下载
+fn existing_library_is_valid(
+    path: &Path,
+    expected_sha1: Option<&str>,
+) -> Result<bool, LauncherError> {
+    if !path.is_file() {
+        return Ok(false);
+    }
+    if fs::metadata(path)?.len() < 100 {
+        return Ok(false);
+    }
+
+    if let Some(expected) = expected_sha1.map(str::trim).filter(|hash| !hash.is_empty()) {
+        return file_utils::verify_file(path, Some(expected), 0);
+    }
+
+    let mut head = [0u8; 4];
+    let mut file = fs::File::open(path)?;
+    let mut read = 0usize;
+    while read < head.len() {
+        match file.read(&mut head[read..]) {
+            Ok(0) => break,
+            Ok(count) => read += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Ok(read == head.len() && head == [0x50, 0x4B, 0x03, 0x04])
+}
+
+async fn verify_existing_library(
+    path: &Path,
+    expected_sha1: Option<String>,
+) -> Result<bool, LauncherError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || existing_library_is_valid(&path, expected_sha1.as_deref()))
+        .await
+        .map_err(|e| LauncherError::Custom(format!("校验库文件任务异常终止: {}", e)))?
 }
 
 /// 老版本 Forge 预置库的候选地址：镜像 `/maven/{path}` 在前，官方 maven 兜底
@@ -825,11 +889,18 @@ pub(crate) async fn download_library_from_profile(
         }
         let target_path = libraries_dir.join(path);
         if target_path.exists() {
-            return Ok(());
+            if verify_existing_library(&target_path, expected_sha1.map(str::to_string)).await? {
+                return Ok(());
+            }
+            warn!(
+                "Forge: 已存在的库校验失败，重新下载: {}",
+                target_path.display()
+            );
+            fs::remove_file(&target_path)?;
         }
 
         if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent).ok();
+            fs::create_dir_all(parent)?;
         }
 
         let source = DownloadSource::current();
@@ -869,7 +940,14 @@ pub(crate) async fn download_library_from_profile(
         }
         let target_path = libraries_dir.join(&maven_path);
         if target_path.exists() {
-            return Ok(());
+            if verify_existing_library(&target_path, expected_sha1.map(str::to_string)).await? {
+                return Ok(());
+            }
+            warn!(
+                "Forge: 已存在的库校验失败，重新下载: {}",
+                target_path.display()
+            );
+            fs::remove_file(&target_path)?;
         }
 
         let source = DownloadSource::current();
@@ -1163,12 +1241,11 @@ async fn manual_install_new_forge(
                         }
                         let target = libs.join(rel);
                         if let Some(p) = target.parent() {
-                            fs::create_dir_all(p).ok();
+                            fs::create_dir_all(p)?;
                         }
                         let mut buf = Vec::new();
-                        if file.read_to_end(&mut buf).is_ok() {
-                            fs::write(&target, &buf).ok();
-                        }
+                        file.read_to_end(&mut buf)?;
+                        fs::write(&target, &buf)?;
                     }
                 } else if name.starts_with("data/")
                     && !name.ends_with('/')
@@ -1183,12 +1260,11 @@ async fn manual_install_new_forge(
                         .join(format!("{}-{}", mc, ver))
                         .join(rel);
                     if let Some(p) = target.parent() {
-                        fs::create_dir_all(p).ok();
+                        fs::create_dir_all(p)?;
                     }
                     let mut buf = Vec::new();
-                    if file.read_to_end(&mut buf).is_ok() {
-                        fs::write(&target, &buf).ok();
-                    }
+                    file.read_to_end(&mut buf)?;
+                    fs::write(&target, &buf)?;
                 }
             }
 
@@ -1563,9 +1639,9 @@ fn choose_processor_java(
 #[cfg(test)]
 mod tests {
     use super::{
-        ProcessorVars, choose_installer_java, choose_processor_java, find_installed_loader_dir,
-        forge_installer_sources, loader_jar_present, mirror_urls, resolve_processor_arg,
-        run_limited_command, runs_on_client, snapshot_version_dirs,
+        ProcessorVars, choose_installer_java, choose_processor_java, existing_library_is_valid,
+        find_installed_loader_dir, forge_installer_sources, loader_jar_present, mirror_urls,
+        resolve_processor_arg, run_limited_command, runs_on_client, snapshot_version_dirs,
     };
     use crate::services::download::source::{BMCL_BASE, DownloadSource, HKMC_MAIN_BASE};
     use crate::services::launcher::java::{JavaArch, JavaCandidate};
@@ -1600,6 +1676,39 @@ mod tests {
             is_ea: false,
             from_config: false,
         }
+    }
+
+    #[test]
+    fn test_existing_library_accepts_matching_sha1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lib.jar");
+        let mut bytes = vec![0u8; 200];
+        bytes[..4].copy_from_slice(b"PK\x03\x04");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let sha1 = crate::utils::file_utils::sha1_hex(&bytes);
+        assert!(existing_library_is_valid(&path, Some(&sha1)).unwrap());
+        assert!(!existing_library_is_valid(&path, Some(&"0".repeat(40))).unwrap());
+    }
+
+    #[test]
+    fn test_existing_library_without_sha1_requires_zip_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jar = tmp.path().join("lib.jar");
+        let mut bytes = vec![0u8; 200];
+        bytes[..4].copy_from_slice(b"PK\x03\x04");
+        std::fs::write(&jar, &bytes).unwrap();
+        assert!(existing_library_is_valid(&jar, None).unwrap());
+
+        // 半截文件 / 镜像错误页没有 ZIP 头，必须重新下载
+        let broken = tmp.path().join("broken.jar");
+        std::fs::write(&broken, "<html>error</html>").unwrap();
+        assert!(!existing_library_is_valid(&broken, None).unwrap());
+
+        // 空文件同样不能算已安装
+        let empty = tmp.path().join("empty.jar");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(!existing_library_is_valid(&empty, None).unwrap());
     }
 
     #[test]

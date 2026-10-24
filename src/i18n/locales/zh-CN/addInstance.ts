@@ -78,6 +78,7 @@ export default {
 
   modpackBrowser: {
     searchLabel: '搜索整合包',
+    searchPlaceholder: '输入整合包名称（回车搜索）',
     gameVersionLabel: '游戏版本',
     loaderLabel: '加载器',
     categoryLabel: '分类',

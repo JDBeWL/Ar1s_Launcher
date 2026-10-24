@@ -57,7 +57,7 @@ export default {
     title: '安装资源包',
     close: '关闭',
     searchLabel: '搜索资源包',
-    searchPlaceholder: '输入名称，例如 Faithful',
+    searchPlaceholder: '输入名称，例如 Faithful（回车搜索）',
     retry: '重试',
     empty: '没有找到适配当前版本的资源包',
     installed: '已安装',

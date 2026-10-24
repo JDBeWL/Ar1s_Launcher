@@ -79,6 +79,7 @@ export default {
 
   modpackBrowser: {
     searchLabel: 'Search modpacks',
+    searchPlaceholder: 'Enter a modpack name (press Enter)',
     gameVersionLabel: 'Game version',
     loaderLabel: 'Loader',
     categoryLabel: 'Category',

@@ -59,7 +59,7 @@ export default {
     title: 'Install resource packs',
     close: 'Close',
     searchLabel: 'Search resource packs',
-    searchPlaceholder: 'Enter a name, e.g. Faithful',
+    searchPlaceholder: 'Enter a name, e.g. Faithful (press Enter)',
     retry: 'Retry',
     empty: 'No resource packs match this game version',
     installed: 'Installed',

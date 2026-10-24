@@ -35,8 +35,15 @@ const {
   modpackSortOptions,
   fetchGameVersions,
   searchModpacks,
+  submitModpackSearch,
   onModpackPageChange,
 } = useModrinth(() => props.source);
+
+function onSearchEnter(event: KeyboardEvent) {
+  // 中文输入法选词时的回车不是提交搜索
+  if (event.isComposing) return;
+  void submitModpackSearch();
+}
 
 // 搜索框里是 CurseForge 链接或纯数字 ID 时，给出绕过搜索库的直接安装入口。
 // minekuai 的项目库收录不全（新包搜不到但 versions 端点有数据），
@@ -118,8 +125,10 @@ onMounted(async () => {
               density="comfortable"
               v-model="modpackSearchQuery"
               :label="t('modpackBrowser.searchLabel')"
+              :placeholder="t('modpackBrowser.searchPlaceholder')"
               hide-details
               clearable
+              @keydown.enter="onSearchEnter"
             >
               <template #prepend-inner>
                 <v-icon size="20" color="on-surface-variant">mdi-magnify</v-icon>

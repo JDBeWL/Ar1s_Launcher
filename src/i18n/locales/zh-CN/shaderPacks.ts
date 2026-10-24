@@ -81,7 +81,7 @@ export default {
     title: '安装光影包',
     close: '关闭',
     searchLabel: '搜索光影包',
-    searchPlaceholder: '输入名称，例如 Complementary',
+    searchPlaceholder: '输入名称，例如 Complementary（回车搜索）',
     activateAfterInstall: '安装后立即启用',
     retry: '重试',
     empty: '没有找到适配当前版本的光影包',

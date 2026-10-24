@@ -251,7 +251,7 @@ impl ModpackInstaller {
         validate_instance_name_or_error(&options.instance_name)?;
 
         let config = config::load_config()?;
-        let targets = build_targets(&config, &options.instance_name);
+        let targets = build_targets(&config, &options.instance_name)?;
         let _install_lock = acquire_install_lock(&targets).await?;
         ensure_instance_free(&targets, &options.instance_name)?;
 
@@ -270,7 +270,7 @@ impl ModpackInstaller {
         }
         .await;
 
-        finalize_install(&config, &targets, result).await
+        finalize_install(&targets, result).await
     }
 
     /// CurseForge 在线安装：解析出的直链文件走统一流水线，
@@ -284,7 +284,7 @@ impl ModpackInstaller {
         validate_instance_name_or_error(&options.instance_name)?;
 
         let config = config::load_config()?;
-        let targets = build_targets(&config, &options.instance_name);
+        let targets = build_targets(&config, &options.instance_name)?;
         let _install_lock = acquire_install_lock(&targets).await?;
         ensure_instance_free(&targets, &options.instance_name)?;
 
@@ -312,7 +312,7 @@ impl ModpackInstaller {
         }
         .await;
 
-        finalize_install(&config, &targets, result).await
+        finalize_install(&targets, result).await
     }
 
     /// 本地导入：自动识别 .mrpack 与 CurseForge zip，其余流程与在线安装一致
@@ -328,7 +328,7 @@ impl ModpackInstaller {
         validate_local_archive(&archive_path)?;
 
         let config = config::load_config()?;
-        let targets = build_targets(&config, &options.instance_name);
+        let targets = build_targets(&config, &options.instance_name)?;
         let _install_lock = acquire_install_lock(&targets).await?;
         ensure_instance_free(&targets, &options.instance_name)?;
 
@@ -384,7 +384,7 @@ impl ModpackInstaller {
         }
         .await;
 
-        finalize_install(&config, &targets, result).await
+        finalize_install(&targets, result).await
     }
 
     /// 只读预览本地包，供安装页在真正落盘前展示信息；.mrpack 与 CF zip 都认
@@ -757,9 +757,6 @@ impl ModpackInstaller {
         check_cancelled()?;
 
         fs::create_dir_all(&targets.instance_dir)?;
-        if targets.content_root != targets.instance_dir {
-            fs::create_dir_all(&targets.content_root)?;
-        }
 
         send_progress(50, "复制整合包文件...", false);
         check_cancelled()?;
@@ -1242,28 +1239,33 @@ fn progress_emitter(window: &tauri::Window) -> impl Fn(u8, &str, bool) {
     }
 }
 
-fn build_targets(config: &crate::models::GameConfig, instance_name: &str) -> InstallTargets {
+fn build_targets(
+    config: &crate::models::GameConfig,
+    instance_name: &str,
+) -> Result<InstallTargets, LauncherError> {
+    // 关掉隔离后整合包会直接覆盖所有实例共用的 mods / config / saves，
+    // 失败时又没法区分哪些文件是这次写的，回滚会误删别人的内容：只能拒绝
+    if !config.version_isolation {
+        return Err(LauncherError::Custom(
+            "版本隔离已关闭：整合包会写入所有实例共用的 mods / config / saves，安装失败也无法回滚。请先在设置中开启版本隔离再安装整合包。"
+                .to_string(),
+        ));
+    }
+
     let game_dir = PathBuf::from(&config.game_dir);
     let instance_dir = game_dir.join("versions").join(instance_name);
-    // 版本信息写在实例目录，模组/配置/存档按隔离开关落到实例目录或共享根目录
     let content_root = isolation::content_root(config, &game_dir, instance_name);
-    if !config.version_isolation {
-        warn!(
-            "版本隔离已关闭：整合包内容会写入共享目录 {}",
-            content_root.display()
-        );
-    }
 
     let temp_dir = game_dir.join("temp");
     let extract_dir = temp_dir.join(format!("{}_extract", instance_name));
 
-    InstallTargets {
+    Ok(InstallTargets {
         game_dir,
         instance_dir,
         content_root,
         temp_dir,
         extract_dir,
-    }
+    })
 }
 
 /// 与实例创建/删除/重命名共用一把锁；失败清理会删实例目录，不能和另一实例互相踩
@@ -1292,7 +1294,6 @@ fn ensure_instance_free(
 
 /// 失败或被取消时回滚这次安装产生的文件
 async fn finalize_install<T>(
-    config: &crate::models::GameConfig,
     targets: &InstallTargets,
     result: Result<T, LauncherError>,
 ) -> Result<T, LauncherError> {
@@ -1307,14 +1308,6 @@ async fn finalize_install<T>(
                 Ok(Err(e)) => warn!("清理实例目录失败: {}", e),
                 Err(e) => warn!("清理实例目录任务异常终止: {}", e),
             }
-        }
-
-        if !config.version_isolation && targets.content_root != targets.instance_dir {
-            // 关闭隔离时内容是共享的，删掉就等于删别人的文件，只能提示手动处理
-            warn!(
-                "版本隔离已关闭，本次写入共享目录 {} 的文件不会被自动清理",
-                targets.content_root.display()
-            );
         }
 
         if targets.extract_dir.exists() {
@@ -1470,9 +1463,10 @@ fn sanitize_instance_name(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        FILE_COMPLETED, FILE_DOWNLOADING, ModpackFileState, dispatch_order, sanitize_instance_name,
-        snapshot_files,
+        FILE_COMPLETED, FILE_DOWNLOADING, ModpackFileState, build_targets, dispatch_order,
+        sanitize_instance_name, snapshot_files,
     };
+    use crate::models::GameConfig;
     use crate::services::modpack_format::{ModrinthIndexFile, ModrinthIndexHashes};
     use crate::utils::file_utils;
     use std::sync::Arc;
@@ -1560,5 +1554,32 @@ mod tests {
 
         let ascii = sanitize_instance_name(&"a".repeat(100));
         assert_eq!(ascii.chars().count(), 64);
+    }
+
+    #[test]
+    fn test_build_targets_rejects_shared_content_root() {
+        let config = GameConfig {
+            game_dir: "C:/game".to_string(),
+            version_isolation: false,
+            ..GameConfig::default()
+        };
+
+        let error = build_targets(&config, "pack")
+            .err()
+            .expect("非隔离模式必须拒绝安装")
+            .to_string();
+        assert!(error.contains("版本隔离"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn test_build_targets_keeps_modpack_content_inside_instance() {
+        let config = GameConfig {
+            game_dir: "C:/game".to_string(),
+            version_isolation: true,
+            ..GameConfig::default()
+        };
+
+        let targets = build_targets(&config, "pack").unwrap();
+        assert_eq!(targets.content_root, targets.instance_dir);
     }
 }

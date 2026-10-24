@@ -7,6 +7,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import ModBrowserDialog from './ModBrowserDialog.vue';
+import { useInstanceScope } from '../../composables/useInstanceScope';
 import { useNotificationStore } from '../../stores/notificationStore';
 import { configApi, instanceApi, modApi } from '../../services';
 import type { ModInfo, ModUpdate } from '../../types/events';
@@ -25,6 +26,7 @@ const emit = defineEmits<{
 
 const notificationStore = useNotificationStore();
 const { t } = useI18n();
+const scope = useInstanceScope(() => props.instanceName);
 
 const mods = ref<ModInfo[]>([]);
 const loading = ref(false);
@@ -40,6 +42,8 @@ const updatingAll = ref(false);
 // 关闭版本隔离时模组在共享目录里，启停/删除会影响所有实例
 const versionIsolation = ref(true);
 
+let loadSeq = 0;
+
 const updateMap = computed(() => {
   const map = new Map<string, ModUpdate>();
   for (const update of updates.value) {
@@ -52,19 +56,20 @@ const updatableCount = computed(() => updates.value.length);
 
 async function loadMods() {
   // 快速切换实例时旧实例的慢响应后到会覆盖新列表，之后按旧文件名操作就会写错目录
-  const target = props.instanceName;
+  const task = scope.begin();
+  const seq = ++loadSeq;
   loading.value = true;
   error.value = '';
   try {
-    const list = await instanceApi.getMods(target);
-    if (props.instanceName !== target) return;
+    const list = await instanceApi.getMods(task.instanceName);
+    if (!scope.isCurrent(task) || seq !== loadSeq) return;
     mods.value = list;
   } catch (e) {
-    if (props.instanceName !== target) return;
+    if (!scope.isCurrent(task) || seq !== loadSeq) return;
     logError('Failed to load mods', e, 'ModsPanel');
     error.value = getErrorMessage(e);
   } finally {
-    if (props.instanceName === target) {
+    if (scope.isCurrent(task) && seq === loadSeq) {
       loading.value = false;
     }
   }
@@ -80,16 +85,21 @@ async function loadIsolationSetting() {
 }
 
 async function toggleMod(mod: ModInfo) {
+  const task = scope.begin();
   busyFile.value = mod.fileName;
   try {
-    await instanceApi.setModEnabled(props.instanceName, mod.fileName, !mod.enabled);
+    await instanceApi.setModEnabled(task.instanceName, mod.fileName, !mod.enabled);
+    if (!scope.isCurrent(task)) return;
     await loadMods();
     emit('changed');
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to toggle mod', e, 'ModsPanel');
     notificationStore.error(t('mods.toggleFailed'), getErrorMessage(e));
   } finally {
-    busyFile.value = null;
+    if (scope.isCurrent(task)) {
+      busyFile.value = null;
+    }
   }
 }
 
@@ -101,19 +111,24 @@ function askDeleteMod(mod: ModInfo) {
 async function deleteMod() {
   if (!modToDelete.value) return;
 
+  const task = scope.begin();
   const fileName = modToDelete.value.fileName;
   busyFile.value = fileName;
   try {
-    await instanceApi.deleteMod(props.instanceName, fileName);
+    await instanceApi.deleteMod(task.instanceName, fileName);
+    if (!scope.isCurrent(task)) return;
     deleteDialog.value = false;
     modToDelete.value = null;
     await loadMods();
     emit('changed');
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to delete mod', e, 'ModsPanel');
     notificationStore.error(t('mods.deleteFailed'), getErrorMessage(e));
   } finally {
-    busyFile.value = null;
+    if (scope.isCurrent(task)) {
+      busyFile.value = null;
+    }
   }
 }
 
@@ -129,22 +144,25 @@ async function onInstalled() {
 async function checkUpdates() {
   if (checking.value) return;
 
+  const task = scope.begin();
   checking.value = true;
   try {
-    updates.value = await modApi.checkModUpdates(props.instanceName);
-    if (updates.value.length === 0) {
+    const found = await modApi.checkModUpdates(task.instanceName);
+    if (!scope.isCurrent(task)) return;
+    updates.value = found;
+    if (found.length === 0) {
       notificationStore.success(t('mods.upToDate'), t('mods.upToDateHint'));
     } else {
-      notificationStore.info(
-        t('mods.updateFound'),
-        t('mods.updateFoundHint', { count: updates.value.length }, updates.value.length),
-      );
+      notificationStore.info(t('mods.updateFound'), t('mods.updateFoundHint', { count: found.length }, found.length));
     }
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to check mod updates', e, 'ModsPanel');
     notificationStore.error(t('mods.checkFailed'), getErrorMessage(e), true);
   } finally {
-    checking.value = false;
+    if (scope.isCurrent(task)) {
+      checking.value = false;
+    }
   }
 }
 
@@ -152,9 +170,11 @@ async function updateMod(mod: ModInfo) {
   const update = updateMap.value.get(mod.fileName);
   if (!update || updatingFile.value) return;
 
+  const task = scope.begin();
   updatingFile.value = mod.fileName;
   try {
-    await modApi.updateMod(props.instanceName, mod.fileName, update.versionId);
+    await modApi.updateMod(task.instanceName, mod.fileName, update.versionId);
+    if (!scope.isCurrent(task)) return;
     updates.value = updates.value.filter((item) => item.fileName !== mod.fileName);
     await loadMods();
     emit('changed');
@@ -163,10 +183,13 @@ async function updateMod(mod: ModInfo) {
       t('mods.updateSuccessHint', { name: mod.displayName, version: update.versionNumber }),
     );
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to update mod', e, 'ModsPanel');
     notificationStore.error(t('mods.updateFailed'), getErrorMessage(e), true);
   } finally {
-    updatingFile.value = null;
+    if (scope.isCurrent(task)) {
+      updatingFile.value = null;
+    }
   }
 }
 
@@ -176,20 +199,27 @@ async function updateAll() {
   const pending = [...updates.value];
   if (pending.length === 0) return;
 
+  const task = scope.begin();
   updatingAll.value = true;
   let succeeded = 0;
   let failed = 0;
   try {
     for (const update of pending) {
+      // 切换实例后立刻停手，别把剩余更新写进另一个实例
+      if (!scope.isCurrent(task)) break;
       try {
-        await modApi.updateMod(props.instanceName, update.fileName, update.versionId);
+        await modApi.updateMod(task.instanceName, update.fileName, update.versionId);
+        if (!scope.isCurrent(task)) break;
         succeeded += 1;
         updates.value = updates.value.filter((item) => item.fileName !== update.fileName);
       } catch (e) {
+        if (!scope.isCurrent(task)) break;
         failed += 1;
         logError(`Failed to update ${update.fileName}`, e, 'ModsPanel');
       }
     }
+
+    if (!scope.isCurrent(task)) return;
 
     await loadMods();
     emit('changed');
@@ -200,7 +230,9 @@ async function updateAll() {
       notificationStore.warning(t('mods.updatePartlyFailed'), t('mods.updatePartlyFailedHint', { succeeded, failed }));
     }
   } finally {
-    updatingAll.value = false;
+    if (scope.isCurrent(task)) {
+      updatingAll.value = false;
+    }
   }
 }
 
@@ -213,11 +245,19 @@ onMounted(() => {
   void loadIsolationSetting();
 });
 
-// 在实例之间切换时组件会被复用，必须按新实例重新拉列表
+// 在实例之间切换时组件会被复用，必须按新实例重新拉列表并丢掉旧实例的操作状态
 watch(
   () => props.instanceName,
   () => {
     updates.value = [];
+    checking.value = false;
+    updatingFile.value = null;
+    updatingAll.value = false;
+    busyFile.value = null;
+    deleteDialog.value = false;
+    modToDelete.value = null;
+    browser.value = false;
+    error.value = '';
     void loadMods();
   },
 );

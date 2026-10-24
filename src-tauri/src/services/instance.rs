@@ -1553,53 +1553,11 @@ pub async fn launch_instance(
 
     // lastPlayed 已由 launcher::launch_minecraft 更新，此处不重复
 
-    let (auth_type, access_token, uuid) = match config.auth_type {
-        crate::models::AuthType::Microsoft => {
-            let at = "microsoft".to_string();
-            let mut token = config.ms_access_token.clone();
-            let uid = config.uuid.clone();
-            let expires_at = config.ms_expires_at.unwrap_or(0);
-
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-
-            if now >= expires_at - 60 {
-                info!("Microsoft token 已过期或即将过期，正在刷新...");
-                if let Some(refresh_token) = config.ms_refresh_token.clone() {
-                    match crate::services::microsoft_auth::refresh_and_authenticate(&refresh_token)
-                        .await
-                    {
-                        Ok(auth_result) => {
-                            config::update_config_async({
-                                let auth = auth_result.clone();
-                                move |cfg| {
-                                    cfg.ms_access_token = Some(auth.access_token.clone());
-                                    cfg.ms_refresh_token = Some(auth.refresh_token.clone());
-                                    cfg.ms_expires_at = Some(auth.expires_at);
-                                    cfg.username = Some(auth.username.clone());
-                                    cfg.uuid = Some(auth.uuid.clone());
-                                    Ok(())
-                                }
-                            })
-                            .await?;
-
-                            token = Some(auth_result.access_token);
-                            info!("Microsoft token 刷新成功");
-                        }
-                        Err(e) => {
-                            warn!("Microsoft token 刷新失败: {}, 将使用旧 token 启动", e);
-                        }
-                    }
-                } else {
-                    warn!("未找到 refresh_token，无法刷新 Microsoft token");
-                }
-            }
-
-            (Some(at), token, uid)
-        }
-        crate::models::AuthType::Offline => (None, None, None),
+    // Microsoft token 的读取与刷新统一由 launcher 在认证锁内完成，
+    // 这里只告诉它用哪种登录方式，避免两个入口各自轮换 refresh_token
+    let auth_type = match config.auth_type {
+        crate::models::AuthType::Microsoft => Some("microsoft".to_string()),
+        crate::models::AuthType::Offline => None,
     };
 
     let launch_options = LaunchOptions {
@@ -1613,8 +1571,8 @@ pub async fn launch_instance(
         window_height: config.window_height,
         fullscreen: Some(config.fullscreen),
         auth_type,
-        access_token,
-        uuid,
+        access_token: None,
+        uuid: None,
         override_java_path,
         force_java_mismatch,
     };

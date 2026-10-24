@@ -40,7 +40,7 @@ export default {
     title: 'Install mods',
     close: 'Close',
     searchLabel: 'Search mods',
-    searchPlaceholder: 'Enter a name, e.g. Sodium',
+    searchPlaceholder: 'Enter a name, e.g. Sodium (press Enter)',
     retry: 'Retry',
     empty: 'No mods match this game version and loader',
     installed: 'Installed',

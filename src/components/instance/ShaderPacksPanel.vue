@@ -8,6 +8,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { open } from '@tauri-apps/plugin-dialog';
 import ShaderPackBrowserDialog from './ShaderPackBrowserDialog.vue';
+import { useInstanceScope } from '../../composables/useInstanceScope';
 import { useNotificationStore } from '../../stores/notificationStore';
 import { configApi, shaderPackApi } from '../../services';
 import type { ShaderBackend, ShaderPackInfo, ShaderPackList, ShaderPackUpdate } from '../../types/events';
@@ -25,6 +26,7 @@ const emit = defineEmits<{
 
 const notificationStore = useNotificationStore();
 const { t } = useI18n();
+const scope = useInstanceScope(() => props.instanceName);
 
 const state = ref<ShaderPackList | null>(null);
 const loading = ref(false);
@@ -41,6 +43,8 @@ const updatingFile = ref<string | null>(null);
 const updatingAll = ref(false);
 // 关闭版本隔离时 shaderpacks 放在共享目录，选择会影响所有实例
 const versionIsolation = ref(true);
+
+let loadSeq = 0;
 
 const packs = computed(() => state.value?.packs ?? []);
 const selectedName = computed(() => state.value?.selected ?? null);
@@ -101,19 +105,20 @@ function backendHint(): string {
 
 async function loadPacks() {
   // 快速切换实例时旧实例的慢响应后到会覆盖新列表，之后按旧文件名操作就会写错目录
-  const target = props.instanceName;
+  const task = scope.begin();
+  const seq = ++loadSeq;
   loading.value = true;
   error.value = '';
   try {
-    const result = await shaderPackApi.getShaderPacks(target);
-    if (props.instanceName !== target) return;
+    const result = await shaderPackApi.getShaderPacks(task.instanceName);
+    if (!scope.isCurrent(task) || seq !== loadSeq) return;
     state.value = result;
   } catch (e) {
-    if (props.instanceName !== target) return;
+    if (!scope.isCurrent(task) || seq !== loadSeq) return;
     logError('Failed to load shader packs', e, 'ShaderPacksPanel');
     error.value = getErrorMessage(e);
   } finally {
-    if (props.instanceName === target) {
+    if (scope.isCurrent(task) && seq === loadSeq) {
       loading.value = false;
     }
   }
@@ -131,47 +136,65 @@ async function loadIsolationSetting() {
 async function selectPack(pack: ShaderPackInfo) {
   if (busyFile.value || pack.selected) return;
 
+  const task = scope.begin();
   busyFile.value = pack.fileName;
   try {
-    state.value = await shaderPackApi.selectShaderPack(props.instanceName, pack.fileName);
+    const next = await shaderPackApi.selectShaderPack(task.instanceName, pack.fileName);
+    if (!scope.isCurrent(task)) return;
+    state.value = next;
     emit('changed');
     notificationStore.success(t('shaderPacks.enableSuccess'), pack.displayName);
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to select shader pack', e, 'ShaderPacksPanel');
     notificationStore.error(t('shaderPacks.enableFailed'), getErrorMessage(e), true);
   } finally {
-    busyFile.value = null;
+    if (scope.isCurrent(task)) {
+      busyFile.value = null;
+    }
   }
 }
 
 async function toggleShaders() {
   if (toggling.value || !state.value) return;
 
+  const task = scope.begin();
   toggling.value = true;
   try {
-    state.value = await shaderPackApi.setShadersEnabled(props.instanceName, !shadersEnabled.value);
+    const next = await shaderPackApi.setShadersEnabled(task.instanceName, !shadersEnabled.value);
+    if (!scope.isCurrent(task)) return;
+    state.value = next;
     emit('changed');
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to toggle shaders', e, 'ShaderPacksPanel');
     notificationStore.error(t('shaderPacks.toggleFailed'), getErrorMessage(e), true);
   } finally {
-    toggling.value = false;
+    if (scope.isCurrent(task)) {
+      toggling.value = false;
+    }
   }
 }
 
 async function disableShaders() {
   if (busyFile.value) return;
 
+  const task = scope.begin();
   busyFile.value = selectedName.value ?? '__off__';
   try {
-    state.value = await shaderPackApi.disableShaderPack(props.instanceName);
+    const next = await shaderPackApi.disableShaderPack(task.instanceName);
+    if (!scope.isCurrent(task)) return;
+    state.value = next;
     emit('changed');
     notificationStore.success(t('shaderPacks.disableSuccess'), t('shaderPacks.disableSuccessHint'));
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to disable shaders', e, 'ShaderPacksPanel');
     notificationStore.error(t('shaderPacks.disableFailed'), getErrorMessage(e), true);
   } finally {
-    busyFile.value = null;
+    if (scope.isCurrent(task)) {
+      busyFile.value = null;
+    }
   }
 }
 
@@ -183,26 +206,32 @@ function askDeletePack(pack: ShaderPackInfo) {
 async function deletePack() {
   if (!packToDelete.value) return;
 
+  const task = scope.begin();
   const fileName = packToDelete.value.fileName;
   busyFile.value = fileName;
   try {
-    await shaderPackApi.deleteShaderPack(props.instanceName, fileName);
+    await shaderPackApi.deleteShaderPack(task.instanceName, fileName);
+    if (!scope.isCurrent(task)) return;
     deleteDialog.value = false;
     packToDelete.value = null;
     updates.value = updates.value.filter((item) => item.fileName !== fileName);
     await loadPacks();
     emit('changed');
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to delete shader pack', e, 'ShaderPacksPanel');
     notificationStore.error(t('shaderPacks.deleteFailed'), getErrorMessage(e));
   } finally {
-    busyFile.value = null;
+    if (scope.isCurrent(task)) {
+      busyFile.value = null;
+    }
   }
 }
 
 async function importPacks() {
   if (importing.value) return;
 
+  const task = scope.begin();
   try {
     const selected = await open({
       multiple: true,
@@ -210,12 +239,14 @@ async function importPacks() {
       filters: [{ name: t('shaderPacks.pickFilter'), extensions: ['zip'] }],
     });
     if (!selected) return;
+    if (!scope.isCurrent(task)) return;
 
     const paths = Array.isArray(selected) ? selected : [selected];
     if (paths.length === 0) return;
 
     importing.value = true;
-    const summary = await shaderPackApi.importShaderPacks(props.instanceName, paths);
+    const summary = await shaderPackApi.importShaderPacks(task.instanceName, paths);
+    if (!scope.isCurrent(task)) return;
     await loadPacks();
     emit('changed');
 
@@ -238,17 +269,22 @@ async function importPacks() {
       );
     }
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to import shader packs', e, 'ShaderPacksPanel');
     notificationStore.error(t('shaderPacks.importFailed'), getErrorMessage(e), true);
   } finally {
-    importing.value = false;
+    if (scope.isCurrent(task)) {
+      importing.value = false;
+    }
   }
 }
 
 async function openFolder() {
+  const task = scope.begin();
   try {
-    await shaderPackApi.openFolder(props.instanceName);
+    await shaderPackApi.openFolder(task.instanceName);
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to open shaderpacks folder', e, 'ShaderPacksPanel');
     notificationStore.error(t('shaderPacks.openFolderFailed'), getErrorMessage(e));
   }
@@ -266,22 +302,28 @@ async function onInstalled() {
 async function checkUpdates() {
   if (checking.value) return;
 
+  const task = scope.begin();
   checking.value = true;
   try {
-    updates.value = await shaderPackApi.checkUpdates(props.instanceName);
-    if (updates.value.length === 0) {
+    const found = await shaderPackApi.checkUpdates(task.instanceName);
+    if (!scope.isCurrent(task)) return;
+    updates.value = found;
+    if (found.length === 0) {
       notificationStore.success(t('shaderPacks.upToDate'), t('shaderPacks.upToDateHint'));
     } else {
       notificationStore.info(
         t('shaderPacks.updateFound'),
-        t('shaderPacks.updateFoundHint', { count: updates.value.length }, updates.value.length),
+        t('shaderPacks.updateFoundHint', { count: found.length }, found.length),
       );
     }
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to check shader pack updates', e, 'ShaderPacksPanel');
     notificationStore.error(t('shaderPacks.checkFailed'), getErrorMessage(e), true);
   } finally {
-    checking.value = false;
+    if (scope.isCurrent(task)) {
+      checking.value = false;
+    }
   }
 }
 
@@ -289,9 +331,11 @@ async function updatePack(pack: ShaderPackInfo) {
   const update = updateMap.value.get(pack.fileName);
   if (!update || updatingFile.value) return;
 
+  const task = scope.begin();
   updatingFile.value = pack.fileName;
   try {
-    const installed = await shaderPackApi.updateShaderPack(props.instanceName, pack.fileName, update.versionId);
+    const installed = await shaderPackApi.updateShaderPack(task.instanceName, pack.fileName, update.versionId);
+    if (!scope.isCurrent(task)) return;
     updates.value = updates.value.filter((item) => item.fileName !== pack.fileName);
     await loadPacks();
     emit('changed');
@@ -300,10 +344,13 @@ async function updatePack(pack: ShaderPackInfo) {
       t('shaderPacks.updateSuccessHint', { name: pack.displayName, version: installed.versionNumber }),
     );
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to update shader pack', e, 'ShaderPacksPanel');
     notificationStore.error(t('shaderPacks.updateFailed'), getErrorMessage(e), true);
   } finally {
-    updatingFile.value = null;
+    if (scope.isCurrent(task)) {
+      updatingFile.value = null;
+    }
   }
 }
 
@@ -313,20 +360,27 @@ async function updateAll() {
   const pending = [...updates.value];
   if (pending.length === 0) return;
 
+  const task = scope.begin();
   updatingAll.value = true;
   let succeeded = 0;
   let failed = 0;
   try {
     for (const update of pending) {
+      // 切换实例后立刻停手，别把剩余更新写进另一个实例
+      if (!scope.isCurrent(task)) break;
       try {
-        await shaderPackApi.updateShaderPack(props.instanceName, update.fileName, update.versionId);
+        await shaderPackApi.updateShaderPack(task.instanceName, update.fileName, update.versionId);
+        if (!scope.isCurrent(task)) break;
         succeeded += 1;
         updates.value = updates.value.filter((item) => item.fileName !== update.fileName);
       } catch (e) {
+        if (!scope.isCurrent(task)) break;
         failed += 1;
         logError(`Failed to update ${update.fileName}`, e, 'ShaderPacksPanel');
       }
     }
+
+    if (!scope.isCurrent(task)) return;
 
     await loadPacks();
     emit('changed');
@@ -343,7 +397,9 @@ async function updateAll() {
       );
     }
   } finally {
-    updatingAll.value = false;
+    if (scope.isCurrent(task)) {
+      updatingAll.value = false;
+    }
   }
 }
 
@@ -352,11 +408,21 @@ onMounted(() => {
   void loadIsolationSetting();
 });
 
-// 在实例之间切换时组件会被复用，必须按新实例重新拉列表
+// 在实例之间切换时组件会被复用，必须按新实例重新拉列表并丢掉旧实例的操作状态
 watch(
   () => props.instanceName,
   () => {
     updates.value = [];
+    checking.value = false;
+    updatingFile.value = null;
+    updatingAll.value = false;
+    busyFile.value = null;
+    toggling.value = false;
+    importing.value = false;
+    deleteDialog.value = false;
+    packToDelete.value = null;
+    browser.value = false;
+    error.value = '';
     void loadPacks();
   },
 );

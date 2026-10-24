@@ -7,6 +7,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { open } from '@tauri-apps/plugin-dialog';
 import ResourcePackBrowserDialog from './ResourcePackBrowserDialog.vue';
+import { useInstanceScope } from '../../composables/useInstanceScope';
 import { useNotificationStore } from '../../stores/notificationStore';
 import { configApi, resourcePackApi } from '../../services';
 import type { ResourcePackInfo, ResourcePackUpdate } from '../../types/events';
@@ -24,6 +25,7 @@ const emit = defineEmits<{
 
 const notificationStore = useNotificationStore();
 const { t } = useI18n();
+const scope = useInstanceScope(() => props.instanceName);
 
 const packs = ref<ResourcePackInfo[]>([]);
 const loading = ref(false);
@@ -39,6 +41,8 @@ const updatingFile = ref<string | null>(null);
 const updatingAll = ref(false);
 // 关闭版本隔离时资源包放在共享目录，启停会影响所有实例
 const versionIsolation = ref(true);
+
+let loadSeq = 0;
 
 const updateMap = computed(() => {
   const map = new Map<string, ResourcePackUpdate>();
@@ -75,19 +79,20 @@ function compatibilityHint(pack: ResourcePackInfo): { text: string; color: strin
 
 async function loadPacks() {
   // 快速切换实例时旧实例的慢响应后到会覆盖新列表，之后按旧文件名操作就会写错目录
-  const target = props.instanceName;
+  const task = scope.begin();
+  const seq = ++loadSeq;
   loading.value = true;
   error.value = '';
   try {
-    const list = await resourcePackApi.getResourcePacks(target);
-    if (props.instanceName !== target) return;
+    const list = await resourcePackApi.getResourcePacks(task.instanceName);
+    if (!scope.isCurrent(task) || seq !== loadSeq) return;
     packs.value = list;
   } catch (e) {
-    if (props.instanceName !== target) return;
+    if (!scope.isCurrent(task) || seq !== loadSeq) return;
     logError('Failed to load resource packs', e, 'ResourcePacksPanel');
     error.value = getErrorMessage(e);
   } finally {
-    if (props.instanceName === target) {
+    if (scope.isCurrent(task) && seq === loadSeq) {
       loading.value = false;
     }
   }
@@ -103,16 +108,21 @@ async function loadIsolationSetting() {
 }
 
 async function togglePack(pack: ResourcePackInfo) {
+  const task = scope.begin();
   busyFile.value = pack.fileName;
   try {
-    await resourcePackApi.setResourcePackEnabled(props.instanceName, pack.fileName, !pack.enabled);
+    await resourcePackApi.setResourcePackEnabled(task.instanceName, pack.fileName, !pack.enabled);
+    if (!scope.isCurrent(task)) return;
     await loadPacks();
     emit('changed');
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to toggle resource pack', e, 'ResourcePacksPanel');
     notificationStore.error(t('resourcePacks.toggleFailed'), getErrorMessage(e));
   } finally {
-    busyFile.value = null;
+    if (scope.isCurrent(task)) {
+      busyFile.value = null;
+    }
   }
 }
 
@@ -124,26 +134,32 @@ function askDeletePack(pack: ResourcePackInfo) {
 async function deletePack() {
   if (!packToDelete.value) return;
 
+  const task = scope.begin();
   const fileName = packToDelete.value.fileName;
   busyFile.value = fileName;
   try {
-    await resourcePackApi.deleteResourcePack(props.instanceName, fileName);
+    await resourcePackApi.deleteResourcePack(task.instanceName, fileName);
+    if (!scope.isCurrent(task)) return;
     deleteDialog.value = false;
     packToDelete.value = null;
     updates.value = updates.value.filter((item) => item.fileName !== fileName);
     await loadPacks();
     emit('changed');
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to delete resource pack', e, 'ResourcePacksPanel');
     notificationStore.error(t('resourcePacks.deleteFailed'), getErrorMessage(e));
   } finally {
-    busyFile.value = null;
+    if (scope.isCurrent(task)) {
+      busyFile.value = null;
+    }
   }
 }
 
 async function importPacks() {
   if (importing.value) return;
 
+  const task = scope.begin();
   try {
     const selected = await open({
       multiple: true,
@@ -151,12 +167,14 @@ async function importPacks() {
       filters: [{ name: t('resourcePacks.pickFilter'), extensions: ['zip'] }],
     });
     if (!selected) return;
+    if (!scope.isCurrent(task)) return;
 
     const paths = Array.isArray(selected) ? selected : [selected];
     if (paths.length === 0) return;
 
     importing.value = true;
-    const summary = await resourcePackApi.importResourcePacks(props.instanceName, paths);
+    const summary = await resourcePackApi.importResourcePacks(task.instanceName, paths);
+    if (!scope.isCurrent(task)) return;
     await loadPacks();
     emit('changed');
 
@@ -179,17 +197,22 @@ async function importPacks() {
       );
     }
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to import resource packs', e, 'ResourcePacksPanel');
     notificationStore.error(t('resourcePacks.importFailed'), getErrorMessage(e), true);
   } finally {
-    importing.value = false;
+    if (scope.isCurrent(task)) {
+      importing.value = false;
+    }
   }
 }
 
 async function openFolder() {
+  const task = scope.begin();
   try {
-    await resourcePackApi.openFolder(props.instanceName);
+    await resourcePackApi.openFolder(task.instanceName);
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to open resourcepacks folder', e, 'ResourcePacksPanel');
     notificationStore.error(t('resourcePacks.openFolderFailed'), getErrorMessage(e));
   }
@@ -207,22 +230,28 @@ async function onInstalled() {
 async function checkUpdates() {
   if (checking.value) return;
 
+  const task = scope.begin();
   checking.value = true;
   try {
-    updates.value = await resourcePackApi.checkUpdates(props.instanceName);
-    if (updates.value.length === 0) {
+    const found = await resourcePackApi.checkUpdates(task.instanceName);
+    if (!scope.isCurrent(task)) return;
+    updates.value = found;
+    if (found.length === 0) {
       notificationStore.success(t('resourcePacks.upToDate'), t('resourcePacks.upToDateHint'));
     } else {
       notificationStore.info(
         t('resourcePacks.updateFound'),
-        t('resourcePacks.updateFoundHint', { count: updates.value.length }, updates.value.length),
+        t('resourcePacks.updateFoundHint', { count: found.length }, found.length),
       );
     }
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to check resource pack updates', e, 'ResourcePacksPanel');
     notificationStore.error(t('resourcePacks.checkFailed'), getErrorMessage(e), true);
   } finally {
-    checking.value = false;
+    if (scope.isCurrent(task)) {
+      checking.value = false;
+    }
   }
 }
 
@@ -230,9 +259,11 @@ async function updatePack(pack: ResourcePackInfo) {
   const update = updateMap.value.get(pack.fileName);
   if (!update || updatingFile.value) return;
 
+  const task = scope.begin();
   updatingFile.value = pack.fileName;
   try {
-    const installed = await resourcePackApi.updateResourcePack(props.instanceName, pack.fileName, update.versionId);
+    const installed = await resourcePackApi.updateResourcePack(task.instanceName, pack.fileName, update.versionId);
+    if (!scope.isCurrent(task)) return;
     updates.value = updates.value.filter((item) => item.fileName !== pack.fileName);
     await loadPacks();
     emit('changed');
@@ -241,10 +272,13 @@ async function updatePack(pack: ResourcePackInfo) {
       t('resourcePacks.updateSuccessHint', { name: pack.displayName, version: installed.versionNumber }),
     );
   } catch (e) {
+    if (!scope.isCurrent(task)) return;
     logError('Failed to update resource pack', e, 'ResourcePacksPanel');
     notificationStore.error(t('resourcePacks.updateFailed'), getErrorMessage(e), true);
   } finally {
-    updatingFile.value = null;
+    if (scope.isCurrent(task)) {
+      updatingFile.value = null;
+    }
   }
 }
 
@@ -254,20 +288,27 @@ async function updateAll() {
   const pending = [...updates.value];
   if (pending.length === 0) return;
 
+  const task = scope.begin();
   updatingAll.value = true;
   let succeeded = 0;
   let failed = 0;
   try {
     for (const update of pending) {
+      // 切换实例后立刻停手，别把剩余更新写进另一个实例
+      if (!scope.isCurrent(task)) break;
       try {
-        await resourcePackApi.updateResourcePack(props.instanceName, update.fileName, update.versionId);
+        await resourcePackApi.updateResourcePack(task.instanceName, update.fileName, update.versionId);
+        if (!scope.isCurrent(task)) break;
         succeeded += 1;
         updates.value = updates.value.filter((item) => item.fileName !== update.fileName);
       } catch (e) {
+        if (!scope.isCurrent(task)) break;
         failed += 1;
         logError(`Failed to update ${update.fileName}`, e, 'ResourcePacksPanel');
       }
     }
+
+    if (!scope.isCurrent(task)) return;
 
     await loadPacks();
     emit('changed');
@@ -284,7 +325,9 @@ async function updateAll() {
       );
     }
   } finally {
-    updatingAll.value = false;
+    if (scope.isCurrent(task)) {
+      updatingAll.value = false;
+    }
   }
 }
 
@@ -293,11 +336,20 @@ onMounted(() => {
   void loadIsolationSetting();
 });
 
-// 在实例之间切换时组件会被复用，必须按新实例重新拉列表
+// 在实例之间切换时组件会被复用，必须按新实例重新拉列表并丢掉旧实例的操作状态
 watch(
   () => props.instanceName,
   () => {
     updates.value = [];
+    checking.value = false;
+    updatingFile.value = null;
+    updatingAll.value = false;
+    busyFile.value = null;
+    importing.value = false;
+    deleteDialog.value = false;
+    packToDelete.value = null;
+    browser.value = false;
+    error.value = '';
     void loadPacks();
   },
 );

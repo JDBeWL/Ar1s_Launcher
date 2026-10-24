@@ -39,7 +39,7 @@ export default {
     title: '安装模组',
     close: '关闭',
     searchLabel: '搜索模组',
-    searchPlaceholder: '输入名称，例如 Sodium',
+    searchPlaceholder: '输入名称，例如 Sodium（回车搜索）',
     retry: '重试',
     empty: '没有找到适配当前版本与加载器的模组',
     installed: '已安装',

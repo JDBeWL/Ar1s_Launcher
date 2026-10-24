@@ -7,7 +7,6 @@ import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { resourcePackApi } from '../../services';
 import { useNotificationStore } from '../../stores/notificationStore';
-import { useDebounceFn } from '../../composables/useDebounce';
 import { getErrorMessage } from '../../utils/format';
 import { logError } from '../../utils/logger';
 import type { ModrinthModpack } from '../../types/events';
@@ -38,7 +37,7 @@ const PAGE_SIZE = 10;
 
 const totalPages = computed(() => Math.ceil(totalHits.value / PAGE_SIZE));
 
-// 防抖挡不住「翻页 + 输入」并发的慢响应，旧响应后到会覆盖新结果，按发起顺序丢弃过期响应
+// 翻页与提交搜索可能并发，旧响应后到会覆盖新结果，按发起顺序丢弃过期响应
 let searchSeq = 0;
 
 async function search() {
@@ -49,7 +48,7 @@ async function search() {
   error.value = '';
   try {
     const result = await resourcePackApi.searchModrinthResourcePacks(props.instanceName, {
-      query: query.value.trim() || undefined,
+      query: (query.value ?? '').trim() || undefined,
       limit: PAGE_SIZE,
       offset: (page.value - 1) * PAGE_SIZE,
       sortBy: 'relevance',
@@ -70,16 +69,26 @@ async function search() {
   }
 }
 
-const searchDebounced = useDebounceFn(() => {
+function submitSearch() {
   page.value = 1;
   void search();
-}, 300);
+}
 
-watch(query, () => searchDebounced.call());
+function onSearchEnter(event: KeyboardEvent) {
+  // 中文输入法选词时的回车不是提交搜索
+  if (event.isComposing) return;
+  submitSearch();
+}
 
-watch(page, () => {
-  void search();
+// 清空搜索词时直接回到完整列表，不必再按一次回车
+watch(query, (value) => {
+  if (!value) submitSearch();
 });
+
+function onPageChange(value: number) {
+  page.value = value;
+  void search();
+}
 
 watch(
   () => props.modelValue,
@@ -170,6 +179,7 @@ function iconUrl(url: string | undefined): string {
           :placeholder="t('resourcePackBrowser.searchPlaceholder')"
           hide-details
           clearable
+          @keydown.enter="onSearchEnter"
         >
           <template #prepend-inner>
             <v-icon size="20" color="on-surface-variant">mdi-magnify</v-icon>
@@ -247,7 +257,14 @@ function iconUrl(url: string | undefined): string {
           {{ t('resourcePackBrowser.totalHits', { count: totalHits }, totalHits) }}
         </span>
         <v-spacer />
-        <v-pagination v-model="page" :length="totalPages" :total-visible="5" density="compact" color="primary" />
+        <v-pagination
+          :model-value="page"
+          :length="totalPages"
+          :total-visible="5"
+          density="compact"
+          color="primary"
+          @update:model-value="onPageChange"
+        />
       </v-card-actions>
     </v-card>
   </v-dialog>

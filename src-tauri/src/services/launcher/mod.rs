@@ -44,7 +44,10 @@ pub async fn launch_minecraft(
     let mut options = options;
     file_utils::validate_version_id_or_error(&options.version)?;
 
-    if options.auth_type.as_deref() == Some("microsoft") && options.access_token.is_none() {
+    if options.auth_type.as_deref() == Some("microsoft") {
+        // token 刷新只走这一个入口：调用方手里的 token 可能早于别的进程刚完成的轮换
+        options.access_token = None;
+
         // 多实例同时启动时只允许一个刷新，后到的实例直接复用轮换后的 token
         let auth_lock = match acquire_auth_lock().await {
             Ok(lock) => Some(lock),
@@ -66,6 +69,9 @@ pub async fn launch_minecraft(
             options.access_token = cfg.ms_access_token.clone();
             if options.uuid.is_none() {
                 options.uuid = cfg.uuid.clone();
+            }
+            if let Some(username) = cfg.username.clone().filter(|name| !name.trim().is_empty()) {
+                options.username = username;
             }
 
             if needs_refresh && auth_lock.is_some() {
@@ -96,6 +102,7 @@ pub async fn launch_minecraft(
 
                             if applied {
                                 options.access_token = Some(auth_result.access_token);
+                                options.username = auth_result.username;
                                 if options.uuid.is_none() {
                                     options.uuid = Some(auth_result.uuid);
                                 }
@@ -105,6 +112,13 @@ pub async fn launch_minecraft(
                                 options.access_token = current.ms_access_token.clone();
                                 if options.uuid.is_none() {
                                     options.uuid = current.uuid.clone();
+                                }
+                                if let Some(username) = current
+                                    .username
+                                    .clone()
+                                    .filter(|name| !name.trim().is_empty())
+                                {
+                                    options.username = username;
                                 }
                                 info!("另一个实例已完成 Microsoft token 刷新");
                             }
@@ -119,6 +133,8 @@ pub async fn launch_minecraft(
             } else if needs_refresh {
                 warn!("token 已过期，但刷新锁被占用，沿用旧 token 启动");
             }
+        } else {
+            warn!("配置中的登录方式不是 Microsoft，跳过 token 刷新");
         }
     }
 
