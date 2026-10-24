@@ -201,6 +201,13 @@ h4 + p {
   border-inline-end-color: transparent;
 }
 
+/* scrollable 对话框给每个 .v-card-text 都加了 overflow-y:auto 与 flex:1 1 auto，而 overflow 非 visible 会让
+   flex 项的 min-height:auto 退化成 0 —— 头部区块会和列表一起被按比例压缩，被压过头就自己出滚动条、内容被裁掉 */
+.v-dialog--scrollable .v-card-text.dialog-static {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
 /* WebView2 默认滚动条与 MD3 圆角卡片不搭 */
 ::-webkit-scrollbar {
   width: 10px;

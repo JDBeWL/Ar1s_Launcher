@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 从本地 .mrpack 导入整合包
+ * 从本地压缩包导入整合包（.mrpack 与 CurseForge zip 自动识别）
  * 选文件后先让后端读清单展示包信息，再由安装页接管具体的下载进度
  */
 import { computed, ref } from 'vue';
@@ -29,7 +29,7 @@ async function pickFile() {
       multiple: false,
       directory: false,
       title: t('localModpack.pickTitle'),
-      filters: [{ name: t('localModpack.pickFilter'), extensions: ['mrpack'] }],
+      filters: [{ name: t('localModpack.pickFilter'), extensions: ['mrpack', 'zip'] }],
     });
     if (!selected) return;
 

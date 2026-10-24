@@ -26,20 +26,13 @@
             <v-icon start size="18">mdi-alpha-m-circle</v-icon>
             Modrinth
           </v-chip>
-          <v-chip value="curseforge" variant="tonal" disabled size="large">
+          <v-chip value="curseforge" variant="tonal" filter size="large">
             <v-icon start size="18">mdi-fire</v-icon>
             CurseForge
-            <v-chip size="x-small" class="ml-1" color="warning" variant="flat">
-              {{ t('addInstance.curseforgeInProgress') }}
-            </v-chip>
           </v-chip>
         </v-chip-group>
 
-        <ModrinthBrowser v-if="selectedPlatform === 'modrinth'" />
-
-        <v-alert v-else-if="selectedPlatform === 'curseforge'" type="info" variant="tonal">
-          {{ t('addInstance.curseforgeComingSoon') }}
-        </v-alert>
+        <ModrinthBrowser :source="selectedPlatform" />
       </v-window-item>
 
       <v-window-item value="local">
@@ -60,5 +53,5 @@ const LocalModpackImport = defineAsyncComponent(() => import('../components/add-
 const { t } = useI18n();
 
 const installType = ref('custom');
-const selectedPlatform = ref('modrinth');
+const selectedPlatform = ref<'modrinth' | 'curseforge'>('modrinth');
 </script>

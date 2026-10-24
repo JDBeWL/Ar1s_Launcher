@@ -23,7 +23,7 @@ function truncateText(text: string, length: number): string {
   return text.substring(0, length) + '...';
 }
 
-const ALLOWED_IMAGE_HOSTS = new Set(['cdn.modrinth.com', 'assets.modrinth.com']);
+const ALLOWED_IMAGE_HOSTS = new Set(['cdn.modrinth.com', 'assets.modrinth.com', 'api-file.tudouai.cn']);
 
 function sanitizeModrinthImageUrl(url: string | null | undefined): string {
   if (!url) return '';

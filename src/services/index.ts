@@ -12,6 +12,7 @@ export {
   userApi,
   modpackApi,
   modApi,
+  curseforgeApi,
   resourcePackApi,
   shaderPackApi,
 } from './api';
@@ -25,4 +26,6 @@ export type {
   LocalModpackPreview,
   ModpackExportOptions,
   ModpackExportResult,
+  CfManualFile,
+  CfCategory,
 } from '../types/events';

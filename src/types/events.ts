@@ -315,6 +315,25 @@ export interface LocalModpackPreview {
   suggestedInstanceName: string;
 }
 
+/** 需手动下载的 CurseForge 受限文件，对应后端 CfManualFile（camelCase） */
+export interface CfManualFile {
+  name: string;
+  url: string;
+}
+
+/** CurseForge 分类标签，对应后端 CfCategory */
+export interface CfCategory {
+  slug: string;
+  name: string;
+}
+
+/** 由 CurseForge 链接/slug/数字 ID 解析出的项目引用，对应后端 CfProjectRef */
+export interface CfProjectRef {
+  projectId: string;
+  title: string;
+  iconUrl: string | null;
+}
+
 export interface ModpackExportOptions {
   name: string;
   version: string;

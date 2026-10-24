@@ -362,7 +362,7 @@ watch(
         <div class="text-body-small mt-1">{{ t('resourcePacks.emptyHint') }}</div>
       </div>
 
-      <v-list v-else lines="two" density="compact">
+      <v-list v-else lines="two" density="compact" bg-color="transparent">
         <v-list-item v-for="pack in packs" :key="pack.fileName">
           <template #prepend>
             <v-avatar size="40" rounded="lg" class="mr-3" color="surface-container-high">

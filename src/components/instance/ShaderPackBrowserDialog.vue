@@ -183,7 +183,7 @@ function iconUrl(url: string | undefined): string {
         </v-btn>
       </v-card-title>
 
-      <v-card-text class="pa-4 pb-2">
+      <v-card-text class="pa-4 pb-2 dialog-static">
         <v-text-field
           v-model="query"
           density="comfortable"
@@ -226,7 +226,7 @@ function iconUrl(url: string | undefined): string {
           <div class="text-body-medium">{{ t('shaderPackBrowser.empty') }}</div>
         </div>
 
-        <v-list v-else lines="two" density="compact">
+        <v-list v-else lines="two" density="compact" bg-color="transparent">
           <v-list-item v-for="pack in results" :key="pack.slug">
             <template #prepend>
               <v-avatar size="40" rounded="lg" class="mr-3" color="secondary-container">

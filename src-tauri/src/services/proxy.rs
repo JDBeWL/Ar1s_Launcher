@@ -4,7 +4,7 @@
 
 use crate::errors::LauncherError;
 use crate::models::{ProxyMode, ProxySettings, ProxyTestResult};
-use crate::services::{config, download, http_client};
+use crate::services::{config, curseforge, download, http_client};
 use log::{info, warn};
 use reqwest::ClientBuilder;
 use std::time::{Duration, Instant};
@@ -53,6 +53,7 @@ pub fn save_settings(settings: ProxySettings) -> Result<ProxySettings, LauncherE
 
     http_client::reload();
     download::reload_http_client();
+    curseforge::reload_minekuai_client();
     info!(
         "网络代理已切换为{}",
         describe(&ProxySettings {
@@ -102,6 +103,16 @@ pub(crate) fn apply(builder: ClientBuilder) -> ClientBuilder {
             warn!("保存的代理配置无效，回退为跟随系统代理: {}", error);
             builder
         }
+    }
+}
+
+/// 国内源（如麦块 API）的代理策略：系统代理不跟随——系统代理通常是翻墙通道，
+/// 国内站点经它绕到境外出口反而大面积失败；只有显式配置的自定义代理才跟随
+pub(crate) fn apply_domestic(builder: ClientBuilder) -> ClientBuilder {
+    let settings = current_settings();
+    match build_proxy(&settings) {
+        Ok(AppliedProxy::Custom(proxy)) => builder.proxy(*proxy),
+        Ok(AppliedProxy::System) | Ok(AppliedProxy::Direct) | Err(_) => builder.no_proxy(),
     }
 }
 

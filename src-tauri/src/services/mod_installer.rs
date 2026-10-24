@@ -7,7 +7,7 @@
 use crate::errors::LauncherError;
 use crate::models::DownloadJob;
 use crate::models::modpack::*;
-use crate::services::{config, download, instance, launcher, modrinth};
+use crate::services::{config, curseforge, download, instance, launcher, modrinth};
 use crate::utils::file_utils;
 use log::{info, warn};
 use serde::Serialize;
@@ -58,6 +58,7 @@ pub struct ModUpdate {
 
 pub struct ModInstaller {
     modrinth: modrinth::ModrinthService,
+    cf: curseforge::CurseForgeService,
 }
 
 static INSTALLER: std::sync::LazyLock<ModInstaller> = std::sync::LazyLock::new(ModInstaller::new);
@@ -70,6 +71,7 @@ impl ModInstaller {
     fn new() -> Self {
         Self {
             modrinth: modrinth::ModrinthService::new(),
+            cf: curseforge::CurseForgeService::new(),
         }
     }
 
@@ -94,6 +96,96 @@ impl ModInstaller {
                 sort_by,
             )
             .await
+    }
+
+    /// CurseForge 模组搜索：同样按实例版本与加载器过滤，结果转成 Modrinth 同构
+    pub async fn search_cf_mods(
+        &self,
+        instance_name: &str,
+        query: Option<String>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+        sort_by: Option<String>,
+    ) -> Result<ModrinthSearchResponse, LauncherError> {
+        let context = resolve_context(instance_name).await?;
+        self.cf
+            .search(
+                curseforge::CfResource::Mods,
+                query,
+                Some(vec![context.game_version]),
+                Some(vec![context.loader]),
+                None,
+                limit,
+                offset,
+                sort_by,
+            )
+            .await
+    }
+
+    /// CurseForge 模组的文件列表（文件即版本），带实例版本过滤
+    pub async fn get_cf_mod_versions(
+        &self,
+        instance_name: &str,
+        project_id: &str,
+    ) -> Result<Vec<ModrinthModpackVersion>, LauncherError> {
+        let context = resolve_context(instance_name).await?;
+        let files = self
+            .cf
+            .get_files(curseforge::CfResource::Mods, project_id, Some(&context.game_version))
+            .await?;
+        Ok(files
+            .iter()
+            .map(curseforge::CurseForgeService::file_to_modrinth_version)
+            .collect())
+    }
+
+    /// 安装一个 CurseForge 模组文件到实例 mods 目录
+    ///
+    /// file_id 缺省时按实例版本过滤后的第一个文件；CF 文件不带依赖解析信息，
+    /// 依赖补齐只对 Modrinth 来源生效
+    pub async fn install_cf_mod(
+        &self,
+        instance_name: String,
+        project_id: String,
+        file_id: Option<String>,
+    ) -> Result<ModInstallResult, LauncherError> {
+        let context = resolve_context(&instance_name).await?;
+        fs::create_dir_all(&context.mods_dir)?;
+
+        let files = self
+            .cf
+            .get_files(curseforge::CfResource::Mods, &project_id, Some(&context.game_version))
+            .await?;
+
+        let selected = match file_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+            Some(id) => files
+                .iter()
+                .find(|file| file.id.to_string() == id)
+                .ok_or_else(|| LauncherError::Custom("未找到指定的模组文件".to_string()))?,
+            None => pick_loader_match(&files, &context.loader)?.ok_or_else(|| {
+                LauncherError::Custom("该模组没有适配此实例版本与加载器的文件".to_string())
+            })?,
+        };
+
+        if selected.download_url.trim().is_empty() {
+            return Err(LauncherError::Custom(
+                "作者已禁止该模组的第三方下载，请在 CurseForge 页面手动下载".to_string(),
+            ));
+        }
+
+        let version = curseforge::CurseForgeService::file_to_modrinth_version(selected);
+        let file_name = download_version(&version, &context.mods_dir).await?;
+
+        info!("实例 {} 安装 CurseForge 模组 {}", instance_name, file_name);
+        Ok(ModInstallResult {
+            installed: vec![InstalledMod {
+                version_id: version.id,
+                project_id: version.project_id,
+                name: version.name,
+                version_number: version.version_number,
+                file_name,
+            }],
+        })
     }
 
     pub async fn get_mod_versions(
@@ -292,6 +384,27 @@ impl ModInstaller {
 
 /// 依赖解析的并发上限：再多也只会把 Modrinth 的速率限制撞得更狠
 const MAX_CONCURRENT_RESOLVES: usize = 8;
+
+/// 从文件列表里挑实例加载器对应的变体；一个都不匹配时退回首个文件
+///
+/// CF 的 versions 不接受 loader 过滤，fabric 与 forge 变体混在同一列表里，
+/// 直接取第一个会给 Forge 实例装上 Fabric 包
+fn pick_loader_match<'a>(
+    files: &'a [curseforge::CfFile],
+    loader: &str,
+) -> Result<Option<&'a curseforge::CfFile>, LauncherError> {
+    let Some(first) = files.first() else {
+        return Ok(None);
+    };
+
+    let matches_loader = |file: &curseforge::CfFile| {
+        file.game_versions
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(loader))
+    };
+
+    Ok(files.iter().find(|file| matches_loader(file)).or(Some(first)))
+}
 
 /// 并发取版本并下载一轮依赖，返回 (序号, 安装结果, 新发现的依赖)
 ///
@@ -514,8 +627,42 @@ fn list_local_mods(mods_dir: &Path) -> Result<Vec<(PathBuf, String)>, LauncherEr
 
 #[cfg(test)]
 mod tests {
-    use super::{list_local_mods, loader_slug};
+    use super::{list_local_mods, loader_slug, pick_loader_match};
+    use crate::services::curseforge::CfFile;
     use std::fs;
+
+    fn cf_file(id: u64, name: &str, tags: &[&str]) -> CfFile {
+        CfFile {
+            id,
+            file_name: name.to_string(),
+            game_versions: tags.iter().map(|t| t.to_string()).collect(),
+            ..CfFile::default()
+        }
+    }
+
+    #[test]
+    fn test_pick_loader_match_prefers_instance_loader_variant() {
+        let files = vec![
+            cf_file(1, "jei-fabric.jar", &["Fabric", "1.20.1"]),
+            cf_file(2, "jei-forge.jar", &["Forge", "1.20.1"]),
+        ];
+
+        // 标签大小写在 CF 数据里不统一，按不区分大小写匹配
+        let picked = pick_loader_match(&files, "forge").unwrap().unwrap();
+        assert_eq!(picked.file_name, "jei-forge.jar");
+
+        let picked = pick_loader_match(&files, "fabric").unwrap().unwrap();
+        assert_eq!(picked.file_name, "jei-fabric.jar");
+    }
+
+    #[test]
+    fn test_pick_loader_match_falls_back_to_first_when_no_variant_matches() {
+        let files = vec![cf_file(1, "jei-fabric.jar", &["Fabric", "1.20.1"])];
+        let picked = pick_loader_match(&files, "neoforge").unwrap().unwrap();
+        assert_eq!(picked.file_name, "jei-fabric.jar");
+
+        assert!(pick_loader_match(&[], "forge").unwrap().is_none());
+    }
 
     #[test]
     fn test_loader_slug_accepts_known_loaders_only() {

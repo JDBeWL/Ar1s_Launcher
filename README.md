@@ -6,7 +6,7 @@ English | [简体中文](README.zh-CN.md)
 
 Ar1s Launcher manages Minecraft versions, mod loaders and isolated game instances in one desktop app, and installs modpacks without making the player assemble a game directory by hand.
 
-![Version](https://img.shields.io/badge/version-0.9.1-blue)
+![Version](https://img.shields.io/badge/version-0.9.2-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2.12-orange)
 ![Vue](https://img.shields.io/badge/Vue-3.5-green)
 ![Rust](https://img.shields.io/badge/Rust-1.95+-red)
@@ -261,7 +261,6 @@ Thanks to [M-Crowe](https://github.com/m-crowe) for testing and for parts of the
 
 ## Roadmap
 
-- [ ] CurseForge modpack support
 - [x] Mod installation and updates (search, dependency resolution, SHA-1 based update checks)
 - [x] Resource pack management (local management, Modrinth installs, update checks)
 - [x] Shader pack management (local management, Modrinth installs, update checks)

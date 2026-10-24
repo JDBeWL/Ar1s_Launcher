@@ -5,7 +5,7 @@
  */
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { modApi } from '../../services';
+import { modApi, curseforgeApi } from '../../services';
 import { useNotificationStore } from '../../stores/notificationStore';
 import { useDebounceFn } from '../../composables/useDebounce';
 import { getErrorMessage } from '../../utils/format';
@@ -28,6 +28,7 @@ const notificationStore = useNotificationStore();
 const { t } = useI18n();
 
 const query = ref('');
+const source = ref<'modrinth' | 'curseforge'>('modrinth');
 const results = ref<ModrinthModpack[]>([]);
 const loading = ref(false);
 const error = ref('');
@@ -49,12 +50,16 @@ async function search() {
   loading.value = true;
   error.value = '';
   try {
-    const result = await modApi.searchModrinthMods(props.instanceName, {
+    const params = {
       query: query.value.trim() || undefined,
       limit: PAGE_SIZE,
       offset: (page.value - 1) * PAGE_SIZE,
       sortBy: 'relevance',
-    });
+    };
+    const result =
+      source.value === 'curseforge'
+        ? await curseforgeApi.searchMods(props.instanceName, params)
+        : await modApi.searchModrinthMods(props.instanceName, params);
     if (seq !== searchSeq) return;
     results.value = result.hits || [];
     totalHits.value = result.total_hits || 0;
@@ -82,6 +87,13 @@ watch(page, () => {
   void search();
 });
 
+// 切数据源：清掉已装标记重新搜，两个源的 slug 体系互不相通
+watch(source, () => {
+  installedSlugs.value = new Set();
+  page.value = 1;
+  void search();
+});
+
 watch(
   () => props.modelValue,
   (open) => {
@@ -99,7 +111,10 @@ async function install(mod: ModrinthModpack) {
 
   installing.value = mod.slug;
   try {
-    const result = await modApi.installModrinthMod(props.instanceName, mod.slug, undefined, true);
+    const result =
+      source.value === 'curseforge'
+        ? await curseforgeApi.installMod(props.instanceName, mod.slug)
+        : await modApi.installModrinthMod(props.instanceName, mod.slug, undefined, true);
     const names = result.installed.map((item) => item.name);
     const name = names[0] ?? mod.title;
     notificationStore.success(
@@ -124,7 +139,8 @@ function formatNumber(value: number): string {
   return String(value);
 }
 
-const ALLOWED_IMAGE_HOSTS = new Set(['cdn.modrinth.com', 'assets.modrinth.com']);
+// cdn/assets.modrinth.com 是 Modrinth 官方 CDN；api-file.tudouai.cn 是麦块开放 API 的图标镜像
+const ALLOWED_IMAGE_HOSTS = new Set(['cdn.modrinth.com', 'assets.modrinth.com', 'api-file.tudouai.cn']);
 
 function iconUrl(url: string | undefined): string {
   if (!url) return '';
@@ -167,7 +183,7 @@ function iconUrl(url: string | undefined): string {
         </v-btn>
       </v-card-title>
 
-      <v-card-text class="pa-4 pb-2">
+      <v-card-text class="pa-4 pb-2 dialog-static">
         <v-text-field
           v-model="query"
           density="comfortable"
@@ -181,6 +197,22 @@ function iconUrl(url: string | undefined): string {
             <v-icon size="20" color="on-surface-variant">mdi-magnify</v-icon>
           </template>
         </v-text-field>
+
+        <div class="d-flex justify-end mt-2">
+          <v-btn-toggle
+            v-model="source"
+            mandatory
+            border
+            divided
+            rounded="pill"
+            density="comfortable"
+            variant="text"
+            color="primary"
+          >
+            <v-btn value="modrinth">Modrinth</v-btn>
+            <v-btn value="curseforge">CurseForge</v-btn>
+          </v-btn-toggle>
+        </div>
       </v-card-text>
 
       <v-divider />
@@ -200,7 +232,7 @@ function iconUrl(url: string | undefined): string {
           <div class="text-body-medium">{{ t('modBrowser.empty') }}</div>
         </div>
 
-        <v-list v-else lines="two" density="compact">
+        <v-list v-else lines="two" density="compact" bg-color="transparent">
           <v-list-item v-for="mod in results" :key="mod.slug">
             <template #prepend>
               <v-avatar size="40" rounded="lg" class="mr-3" color="secondary-container">

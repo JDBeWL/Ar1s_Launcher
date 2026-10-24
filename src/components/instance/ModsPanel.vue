@@ -266,7 +266,7 @@ watch(
         <div class="text-body-small mt-1">{{ t('mods.emptyHint') }}</div>
       </div>
 
-      <v-list v-else lines="two" density="compact">
+      <v-list v-else lines="two" density="compact" bg-color="transparent">
         <v-list-item v-for="mod in mods" :key="mod.fileName">
           <template #prepend>
             <v-icon size="20" color="on-surface-variant">mdi-puzzle-outline</v-icon>

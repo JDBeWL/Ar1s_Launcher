@@ -6,6 +6,8 @@
 use crate::errors::LauncherError;
 use crate::models::DownloadJob;
 use crate::models::modpack::*;
+use crate::services::cf_modpack_format::{self, CfManifest};
+use crate::services::curseforge::{CfManualFile, CfResource, CfResolvedFile, CurseForgeService};
 use crate::services::launcher::isolation;
 use crate::services::modpack_format::{
     self, ModrinthDependencies, ModrinthIndex, ModrinthIndexFile,
@@ -221,6 +223,7 @@ struct ModpackPlan {
 
 pub struct ModpackInstaller {
     modrinth_service: modrinth::ModrinthService,
+    cf_service: CurseForgeService,
 }
 
 static INSTALLER: std::sync::LazyLock<ModpackInstaller> =
@@ -234,6 +237,7 @@ impl ModpackInstaller {
     fn new() -> Self {
         Self {
             modrinth_service: modrinth::ModrinthService::new(),
+            cf_service: CurseForgeService::new(),
         }
     }
 
@@ -269,12 +273,54 @@ impl ModpackInstaller {
         finalize_install(&config, &targets, result).await
     }
 
-    /// 本地导入：直接读取用户选中的 .mrpack，其余流程与在线安装一致
+    /// CurseForge 在线安装：解析出的直链文件走统一流水线，
+    /// 受限文件拿不到直链，返回清单让前端引导用户手动下载
+    pub async fn install_curseforge_modpack(
+        &self,
+        options: ModpackInstallOptions,
+        window: &tauri::Window,
+    ) -> Result<Vec<CfManualFile>, LauncherError> {
+        reset_modpack_cancel_flag();
+        validate_instance_name_or_error(&options.instance_name)?;
+
+        let config = config::load_config()?;
+        let targets = build_targets(&config, &options.instance_name);
+        let _install_lock = acquire_install_lock(&targets).await?;
+        ensure_instance_free(&targets, &options.instance_name)?;
+
+        let result = async {
+            let (plan, manual) = self
+                .prepare_cf_plan(&options, &targets, window)
+                .await?;
+            let outcome = self
+                .install_plan(&plan, &options.instance_name, &targets, window)
+                .await;
+
+            if plan.remove_archive_after {
+                let _ = fs::remove_file(&plan.archive_path);
+            }
+            outcome?;
+
+            if !manual.is_empty() {
+                warn!(
+                    "整合包 {} 有 {} 个文件需手动下载",
+                    options.instance_name,
+                    manual.len()
+                );
+            }
+            Ok(manual)
+        }
+        .await;
+
+        finalize_install(&config, &targets, result).await
+    }
+
+    /// 本地导入：自动识别 .mrpack 与 CurseForge zip，其余流程与在线安装一致
     pub async fn install_local_modpack(
         &self,
         options: LocalModpackInstallOptions,
         window: &tauri::Window,
-    ) -> Result<(), LauncherError> {
+    ) -> Result<Vec<CfManualFile>, LauncherError> {
         reset_modpack_cancel_flag();
         validate_instance_name_or_error(&options.instance_name)?;
 
@@ -287,31 +333,61 @@ impl ModpackInstaller {
         ensure_instance_free(&targets, &options.instance_name)?;
 
         let result = async {
-            let index = read_archive_index(&archive_path).await?;
             let file_stem = file_stem_of(&archive_path);
-            let loader = index.dependencies.loader_slug();
-            let plan = ModpackPlan {
-                display_name: trimmed_or(&index.name, &file_stem),
-                version_label: trimmed_or(&index.version_id, "1.0.0"),
-                source: "local",
-                modpack_id: file_stem,
-                icon_url: None,
-                loaders: loader
-                    .map(|slug| vec![slug.to_string()])
-                    .unwrap_or_default(),
-                index,
-                archive_path,
-                remove_archive_after: false,
-            };
-            self.install_plan(&plan, &options.instance_name, &targets, window)
-                .await
+            match detect_local_archive_kind(&archive_path).await? {
+                LocalArchiveKind::CurseForge => {
+                    let manifest =
+                        read_archive_manifest(&archive_path).await?;
+                    let (index, manual) = self
+                        .build_cf_index(&manifest, window, 30, 45)
+                        .await?;
+                    let deps = index.dependencies.clone();
+                    let plan = ModpackPlan {
+                        display_name: trimmed_or(&manifest.name, &file_stem),
+                        version_label: trimmed_or(&manifest.version, "1.0.0"),
+                        source: "curseforge",
+                        modpack_id: file_stem,
+                        icon_url: None,
+                        loaders: deps
+                            .loader_slug()
+                            .map(|slug| vec![slug.to_string()])
+                            .unwrap_or_default(),
+                        index,
+                        archive_path,
+                        remove_archive_after: false,
+                    };
+                    self.install_plan(&plan, &options.instance_name, &targets, window)
+                        .await?;
+                    Ok(manual)
+                }
+                LocalArchiveKind::Modrinth => {
+                    let index = read_archive_index(&archive_path).await?;
+                    let loader = index.dependencies.loader_slug();
+                    let plan = ModpackPlan {
+                        display_name: trimmed_or(&index.name, &file_stem),
+                        version_label: trimmed_or(&index.version_id, "1.0.0"),
+                        source: "local",
+                        modpack_id: file_stem,
+                        icon_url: None,
+                        loaders: loader
+                            .map(|slug| vec![slug.to_string()])
+                            .unwrap_or_default(),
+                        index,
+                        archive_path,
+                        remove_archive_after: false,
+                    };
+                    self.install_plan(&plan, &options.instance_name, &targets, window)
+                        .await?;
+                    Ok(Vec::new())
+                }
+            }
         }
         .await;
 
         finalize_install(&config, &targets, result).await
     }
 
-    /// 只读预览本地包，供安装页在真正落盘前展示信息
+    /// 只读预览本地包，供安装页在真正落盘前展示信息；.mrpack 与 CF zip 都认
     pub async fn preview_local_modpack(
         &self,
         file_path: String,
@@ -320,37 +396,70 @@ impl ModpackInstaller {
         validate_local_archive(&archive_path)?;
 
         tokio::task::spawn_blocking(move || -> Result<LocalModpackPreview, LauncherError> {
-            let index = modpack_format::read_index_from_archive(&archive_path)?;
-            let client_files: Vec<&ModrinthIndexFile> = index
-                .files
-                .iter()
-                .filter(|file| modpack_format::is_client_file(file))
-                .collect();
-            let total_size = client_files
-                .iter()
-                .map(|file| file.file_size.unwrap_or(0))
-                .sum();
-            let loader = index.dependencies.loader();
             let stem = file_stem_of(&archive_path);
 
+            let (name, version_id, summary, minecraft, loader, loader_version, file_count, total_size) =
+                match detect_local_archive_kind_sync(&archive_path)? {
+                    LocalArchiveKind::CurseForge => {
+                        let manifest = cf_modpack_format::read_manifest_from_archive(&archive_path)?;
+                        let deps = manifest.to_dependencies();
+                        let loader = deps.loader();
+                        (
+                            trimmed_or(&manifest.name, &stem),
+                            trimmed_or(&manifest.version, "1.0.0"),
+                            None,
+                            deps.minecraft.clone(),
+                            deps.loader_slug().map(str::to_string),
+                            loader.as_ref().map(|l| l.loader_version().to_string()),
+                            // CF 清单不带文件体积，装进实例前要在线解析才知道，预览阶段只能给个数
+                            manifest.client_file_refs().len(),
+                            0u64,
+                        )
+                    }
+                    LocalArchiveKind::Modrinth => {
+                        let index = modpack_format::read_index_from_archive(&archive_path)?;
+                        let client_files: Vec<&ModrinthIndexFile> = index
+                            .files
+                            .iter()
+                            .filter(|file| modpack_format::is_client_file(file))
+                            .collect();
+                        let total_size = client_files
+                            .iter()
+                            .map(|file| file.file_size.unwrap_or(0))
+                            .sum();
+                        let loader = index.dependencies.loader();
+                        (
+                            trimmed_or(&index.name, &stem),
+                            trimmed_or(&index.version_id, "1.0.0"),
+                            index
+                                .summary
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|text| !text.is_empty())
+                                .map(str::to_string),
+                            index.dependencies.minecraft.clone(),
+                            index.dependencies.loader_slug().map(str::to_string),
+                            loader
+                                .as_ref()
+                                .map(|loaded| loaded.loader_version().to_string()),
+                            client_files.len(),
+                            total_size,
+                        )
+                    }
+                };
+
+            let suggested_instance_name = sanitize_instance_name(&name);
             Ok(LocalModpackPreview {
                 path: archive_path.to_string_lossy().to_string(),
-                name: trimmed_or(&index.name, &stem),
-                version_id: trimmed_or(&index.version_id, "1.0.0"),
-                summary: index
-                    .summary
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|text| !text.is_empty())
-                    .map(str::to_string),
-                minecraft: index.dependencies.minecraft.clone(),
-                loader: index.dependencies.loader_slug().map(str::to_string),
-                loader_version: loader
-                    .as_ref()
-                    .map(|loaded| loaded.loader_version().to_string()),
-                file_count: client_files.len(),
+                name,
+                version_id,
+                summary,
+                minecraft,
+                loader,
+                loader_version,
+                file_count,
                 total_size,
-                suggested_instance_name: sanitize_instance_name(&trimmed_or(&index.name, &stem)),
+                suggested_instance_name,
             })
         })
         .await
@@ -455,6 +564,159 @@ impl ModpackInstaller {
             archive_path,
             remove_archive_after: true,
         })
+    }
+
+    /// CurseForge 在线安装的准备阶段：拉版本、下载 zip、读清单、在线解析文件直链，
+    /// 最终合成一份 Modrinth 同构 index 交给统一流水线
+    async fn prepare_cf_plan(
+        &self,
+        options: &ModpackInstallOptions,
+        targets: &InstallTargets,
+        window: &tauri::Window,
+    ) -> Result<(ModpackPlan, Vec<CfManualFile>), LauncherError> {
+        let send_progress = progress_emitter(window);
+
+        send_progress(5, "检查实例目录...", false);
+        check_cancelled()?;
+
+        send_progress(10, "获取整合包信息...", false);
+        check_cancelled()?;
+
+        let (title, icon_url) = self
+            .cf_service
+            .get_project_summary(CfResource::Modpacks, &options.modpack_id)
+            .await
+            .map_err(|e| LauncherError::Custom(format!("获取整合包信息失败: {}", e)))?;
+
+        send_progress(15, "获取整合包版本...", false);
+        check_cancelled()?;
+
+        let files = self
+            .cf_service
+            .get_files(CfResource::Modpacks, &options.modpack_id, None)
+            .await
+            .map_err(|e| LauncherError::Custom(format!("获取整合包版本失败: {}", e)))?;
+
+        let selected = files
+            .iter()
+            .find(|file| file.id.to_string() == options.version_id)
+            .ok_or_else(|| LauncherError::Custom("未找到指定的整合包版本".to_string()))?;
+
+        send_progress(20, "下载整合包文件...", false);
+        check_cancelled()?;
+
+        if !targets.temp_dir.exists() {
+            fs::create_dir_all(&targets.temp_dir)?;
+        }
+
+        file_utils::validate_file_name_or_error(&selected.file_name)?;
+        let archive_path = targets.temp_dir.join(&selected.file_name);
+        let sha1 = (!selected.sha1.trim().is_empty()).then_some(selected.sha1.as_str());
+        let cancel_flag = get_cancel_flag();
+
+        let manifest_result = async {
+            // 直链下载逻辑与 Modrinth 完全一致，复用同一个入口
+            self.modrinth_service
+                .download_modpack_file(
+                    &selected.download_url,
+                    &archive_path,
+                    selected.file_length,
+                    sha1,
+                    &cancel_flag,
+                )
+                .await
+                .map_err(|e| {
+                    if e.is_cancelled() {
+                        LauncherError::Cancelled
+                    } else {
+                        LauncherError::Custom(format!("下载整合包文件失败: {}", e))
+                    }
+                })?;
+
+            send_progress(30, "读取整合包清单...", false);
+            check_cancelled()?;
+
+            read_archive_manifest(&archive_path).await
+        }
+        .await;
+
+        if manifest_result.is_err() {
+            let _ = fs::remove_file(&archive_path);
+        }
+        let manifest = manifest_result?;
+
+        send_progress(32, "解析模组文件信息...", false);
+        let (index, manual) = self.build_cf_index(&manifest, window, 32, 45).await?;
+
+        let deps = index.dependencies.clone();
+        let plan = ModpackPlan {
+            display_name: trimmed_or(&title, &manifest.name),
+            version_label: trimmed_or(&manifest.version, &selected.display_name),
+            source: "curseforge",
+            modpack_id: options.modpack_id.clone(),
+            icon_url,
+            loaders: deps
+                .loader_slug()
+                .map(|slug| vec![slug.to_string()])
+                .unwrap_or_default(),
+            index,
+            archive_path,
+            remove_archive_after: true,
+        };
+        Ok((plan, manual))
+    }
+
+    /// CF 清单 → Modrinth 同构 index；解析进度映射进 start..end 区间
+    async fn build_cf_index(
+        &self,
+        manifest: &CfManifest,
+        window: &tauri::Window,
+        start: u8,
+        end: u8,
+    ) -> Result<(ModrinthIndex, Vec<CfManualFile>), LauncherError> {
+        let refs = manifest.client_file_refs();
+        let total_refs = refs.len();
+        let window = window.clone();
+        let (resolved, manual) = self
+            .cf_service
+            .resolve_manifest_files(&refs, move |done, total| {
+                let span = (end - start) as f32;
+                let progress = start + ((done as f32 / total.max(1) as f32) * span) as u8;
+                let _ = window.emit(
+                    "modpack-install-progress",
+                    ModpackInstallProgress {
+                        progress,
+                        message: format!("解析模组文件 ({}/{})", done, total),
+                        indeterminate: false,
+                    },
+                );
+            })
+            .await?;
+        check_cancelled()?;
+
+        let mut index_files = Vec::with_capacity(resolved.len());
+        for entry in &resolved {
+            index_files.push(cf_resolved_to_index_file(entry)?);
+        }
+
+        info!(
+            "CF 清单解析完成：{} 个文件可自动下载，{} 个需手动处理（共 {} 条引用）",
+            index_files.len(),
+            manual.len(),
+            total_refs
+        );
+
+        let index = ModrinthIndex {
+            format_version: modpack_format::SUPPORTED_FORMAT_VERSION,
+            game: "minecraft".to_string(),
+            version_id: trimmed_or(&manifest.version, "1.0.0"),
+            name: manifest.name.trim().to_string(),
+            summary: None,
+            files: index_files,
+            dependencies: manifest.to_dependencies(),
+        };
+        modpack_format::validate_index(&index)?;
+        Ok((index, manual))
     }
 
     /// 解压 → 复制 overrides → 下载清单文件 → 装游戏与加载器 → 写 instance.json
@@ -923,6 +1185,47 @@ impl ModpackInstaller {
             .get_modpack_versions(project_id, game_versions, loaders)
             .await
     }
+
+    /// CurseForge 整合包搜索
+    #[allow(clippy::too_many_arguments)]
+    pub async fn search_cf_modpacks(
+        &self,
+        query: Option<String>,
+        game_versions: Option<Vec<String>>,
+        loaders: Option<Vec<String>>,
+        categories: Option<Vec<String>>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+        sort_by: Option<String>,
+    ) -> Result<ModrinthSearchResponse, LauncherError> {
+        self.cf_service
+            .search(
+                CfResource::Modpacks,
+                query,
+                game_versions,
+                loaders,
+                categories,
+                limit,
+                offset,
+                sort_by,
+            )
+            .await
+    }
+
+    /// CurseForge 整合包的文件列表（文件即版本）
+    pub async fn get_cf_modpack_versions(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ModrinthModpackVersion>, LauncherError> {
+        let files = self
+            .cf_service
+            .get_files(CfResource::Modpacks, project_id, None)
+            .await?;
+        Ok(files
+            .iter()
+            .map(CurseForgeService::file_to_modrinth_version)
+            .collect())
+    }
 }
 
 fn progress_emitter(window: &tauri::Window) -> impl Fn(u8, &str, bool) {
@@ -988,11 +1291,11 @@ fn ensure_instance_free(
 }
 
 /// 失败或被取消时回滚这次安装产生的文件
-async fn finalize_install(
+async fn finalize_install<T>(
     config: &crate::models::GameConfig,
     targets: &InstallTargets,
-    result: Result<(), LauncherError>,
-) -> Result<(), LauncherError> {
+    result: Result<T, LauncherError>,
+) -> Result<T, LauncherError> {
     if result.is_err() {
         info!("安装失败或被取消，清理已创建的文件...");
 
@@ -1064,6 +1367,59 @@ async fn read_archive_index(path: &Path) -> Result<ModrinthIndex, LauncherError>
     tokio::task::spawn_blocking(move || modpack_format::read_index_from_archive(&path))
         .await
         .map_err(|e| LauncherError::Custom(format!("读取整合包失败: {}", e)))?
+}
+
+async fn read_archive_manifest(path: &Path) -> Result<CfManifest, LauncherError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || cf_modpack_format::read_manifest_from_archive(&path))
+        .await
+        .map_err(|e| LauncherError::Custom(format!("读取整合包失败: {}", e)))?
+}
+
+/// 本地压缩包的格式识别
+enum LocalArchiveKind {
+    Modrinth,
+    CurseForge,
+}
+
+/// 打开 zip 只看清单文件名，不解析内容
+async fn detect_local_archive_kind(path: &Path) -> Result<LocalArchiveKind, LauncherError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || detect_local_archive_kind_sync(&path))
+        .await
+        .map_err(|e| LauncherError::Custom(format!("读取整合包失败: {}", e)))?
+}
+
+fn detect_local_archive_kind_sync(path: &Path) -> Result<LocalArchiveKind, LauncherError> {
+    let file = fs::File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| {
+        LauncherError::Custom(format!("无法读取整合包（可能不是 zip 格式）: {}", e))
+    })?;
+
+    if archive.by_name(modpack_format::INDEX_FILE).is_ok() {
+        return Ok(LocalArchiveKind::Modrinth);
+    }
+    if archive.by_name(cf_modpack_format::CF_MANIFEST_FILE).is_ok() {
+        return Ok(LocalArchiveKind::CurseForge);
+    }
+    Err(LauncherError::Custom(
+        "压缩包里既没有 modrinth.index.json 也没有 manifest.json，无法识别整合包格式".to_string(),
+    ))
+}
+
+/// 解析出的 CF 文件 → 下载清单条目；CF 的 manifest 不带路径，惯例全部进 mods/
+fn cf_resolved_to_index_file(entry: &CfResolvedFile) -> Result<ModrinthIndexFile, LauncherError> {
+    file_utils::validate_file_name_or_error(&entry.file.file_name)?;
+    Ok(ModrinthIndexFile {
+        path: format!("mods/{}", entry.file.file_name),
+        hashes: modpack_format::ModrinthIndexHashes {
+            sha1: entry.file.sha1.clone(),
+            sha512: None,
+        },
+        downloads: vec![entry.file.download_url.clone()],
+        file_size: (entry.file.file_length > 0).then_some(entry.file.file_length),
+        env: None,
+    })
 }
 
 fn trimmed_or(value: &str, fallback: &str) -> String {

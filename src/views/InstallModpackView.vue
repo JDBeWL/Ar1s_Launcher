@@ -12,7 +12,7 @@
           </div>
           <div class="text-body-small text-on-surface-variant">
             <template v-if="isLocal">{{ t('localModpack.title') }}</template>
-            <template v-else>Modrinth · {{ projectId }}</template>
+            <template v-else>{{ sourceLabel }} · {{ projectId }}</template>
           </div>
         </div>
       </v-card-title>
@@ -51,6 +51,49 @@
                 color="primary"
                 bg-color="surface-container"
               />
+
+              <!-- CurseForge 受限文件：安装本体已完成，这些要用户手动下载进 mods -->
+              <v-alert
+                v-if="manualDownloads.length > 0 && !validatingFiles && !postInstallChecked"
+                type="warning"
+                variant="tonal"
+                density="comfortable"
+                class="mt-3"
+              >
+                <template #title>
+                  {{ t('installModpack.manualDownloadsTitle', { count: manualDownloads.length }, manualDownloads.length) }}
+                </template>
+                <div class="text-body-small">{{ t('installModpack.manualDownloadsHint') }}</div>
+                <div class="mt-2">
+                  <div
+                    v-for="file in manualDownloads"
+                    :key="file.url || file.name"
+                    class="d-flex align-center ga-2 manual-file"
+                  >
+                    <v-icon size="14" class="flex-shrink-0">mdi-file-alert-outline</v-icon>
+                    <span class="text-body-small text-truncate" :title="file.name">{{ file.name }}</span>
+                  </div>
+                </div>
+                <div class="d-flex justify-end ga-2 mt-3">
+                  <v-btn
+                    v-if="manualDownloads.some((file) => file.url)"
+                    size="small"
+                    variant="text"
+                    prepend-icon="mdi-content-copy"
+                    @click="copyManualUrls"
+                  >
+                    {{ t('installModpack.copyManualUrls') }}
+                  </v-btn>
+                  <v-btn
+                    size="small"
+                    variant="tonal"
+                    color="primary"
+                    @click="runPostInstall"
+                  >
+                    {{ t('installModpack.continueInstall') }}
+                  </v-btn>
+                </div>
+              </v-alert>
 
               <div v-if="validatingFiles" class="d-flex align-center mt-3 text-body-small text-on-surface-variant">
                 <v-progress-circular indeterminate size="14" width="2" class="mr-2" />
@@ -478,7 +521,9 @@ import { useI18n } from 'vue-i18n';
 import { useMultiEventSubscription } from '../composables/useEventSubscription';
 import { useNotificationStore } from '../stores/notificationStore';
 import { useSettingsStore } from '../stores/settings';
-import { modpackApi, instanceApi, versionApi } from '../services';
+import { modpackApi, instanceApi, versionApi, curseforgeApi } from '../services';
+import type { CfManualFile } from '../types/events';
+import { copyText } from '../utils/clipboard';
 import { logError } from '../utils/logger';
 import {
   compareVersionDesc,
@@ -502,11 +547,13 @@ const notificationStore = useNotificationStore();
 const settingsStore = useSettingsStore();
 const { t } = useI18n();
 
-/** 本地导入时 query 里带 file，在线安装时带 projectId */
+/** 本地导入时 query 里带 file，在线安装时带 projectId + source */
 const localFilePath = String(route.query.file || '');
 const isLocal = computed(() => localFilePath.length > 0);
 const projectId = String(route.query.projectId || '');
 const title = String(route.query.title || '');
+const isCurseforge = String(route.query.source || 'modrinth') === 'curseforge';
+const sourceLabel = isCurseforge ? 'CurseForge' : 'Modrinth';
 
 const loadingVersions = ref(false);
 const modpackVersions = ref<ModrinthVersion[]>([]);
@@ -532,6 +579,8 @@ const missingFileCount = ref(0);
 const completingFiles = ref(false);
 const completionError = ref<string | null>(null);
 const awaitingPostInstall = ref(false);
+/** CurseForge 受限文件清单：安装本体已完成，但这些文件要用户手动下载后放进 mods */
+const manualDownloads = ref<CfManualFile[]>([]);
 
 const instanceNameError = ref<string | null>(null);
 const checkingInstanceName = ref(false);
@@ -721,7 +770,9 @@ const filteredModpackVersions = computed(() => {
 
   return filtered.map((v) => ({
     ...v,
-    displayName: `${v.name} (${v.version_number})`,
+    // CurseForge 的文件即版本模型里 name 与 version_number 同源，拼在一起会重复
+    displayName:
+      v.name === v.version_number ? v.name : `${v.name} (${v.version_number})`,
   }));
 });
 
@@ -739,7 +790,9 @@ async function loadVersions() {
   if (!projectId) return;
   loadingVersions.value = true;
   try {
-    const versions = await modpackApi.getModrinthModpackVersions(projectId);
+    const versions = isCurseforge
+      ? await curseforgeApi.getModpackVersions(projectId)
+      : await modpackApi.getModrinthModpackVersions(projectId);
     modpackVersions.value = versions || [];
 
     if (loaderOptions.value.length > 0) {
@@ -782,50 +835,40 @@ async function install() {
   completingFiles.value = false;
   completionError.value = null;
   awaitingPostInstall.value = false;
+  manualDownloads.value = [];
 
   await installSubscriptions.subscribeAll();
 
   try {
     if (isLocal.value) {
-      await modpackApi.installLocalModpack({
+      const warnings = await modpackApi.installLocalModpack({
         filePath: localFilePath,
         instanceName: effectiveInstanceName.value,
       });
+      manualDownloads.value = warnings || [];
     } else {
-      await modpackApi.installModrinthModpack({
+      const installOptions = {
         modpack_id: projectId,
         version_id: selectedVersionId.value!,
         instance_name: effectiveInstanceName.value,
         install_path: '',
-      });
+      };
+      // CF 安装返回受限文件清单；Modrinth 安装没有返回值
+      manualDownloads.value = isCurseforge
+        ? await curseforgeApi.installModpack(installOptions)
+        : [];
+      if (!isCurseforge) {
+        await modpackApi.installModrinthModpack(installOptions);
+      }
     }
 
     installProgress.value = { progress: 100, message: t('installModpack.installDone'), indeterminate: false };
-    validatingFiles.value = true;
-    let validationFailed = false;
-    try {
-      const missing = await versionApi.validateVersionFiles(effectiveInstanceName.value);
-      missingFileCount.value = missing.length;
-    } catch (e) {
-      validationFailed = true;
-      logError('Failed to validate installed files', e, 'InstallModpackView');
-    } finally {
-      validatingFiles.value = false;
-      postInstallChecked.value = true;
-    }
 
-    if (missingFileCount.value === 0) {
-      finishInstall(
-        validationFailed
-          ? t('installModpack.installDoneUnvalidated', { name: effectiveInstanceName.value })
-          : t('installModpack.installDoneValidated', { name: effectiveInstanceName.value }),
-      );
+    // 受限文件先亮出来让用户处理，确认后再走校验/补齐
+    if (manualDownloads.value.length > 0) {
       return;
     }
-
-    // 默认直接补齐缺失的原版文件，不再让用户确认
-    awaitingPostInstall.value = true;
-    void completeMissingFiles();
+    await runPostInstall();
   } catch (e) {
     if (getErrorCode(e) === 'cancelled') {
       notificationStore.info(t('installModpack.cancelledTitle'), t('installModpack.installCancelled'));
@@ -835,10 +878,53 @@ async function install() {
     }
   } finally {
     cancelling.value = false;
-    if (!awaitingPostInstall.value) {
+    if (!awaitingPostInstall.value && manualDownloads.value.length === 0) {
       installSubscriptions.unsubscribeAll();
       installing.value = false;
     }
+  }
+}
+
+/** 安装完成后的校验与原版文件补齐；受限文件确认后也回到这里 */
+async function runPostInstall() {
+  const acknowledgedManual = manualDownloads.value.length > 0;
+  validatingFiles.value = true;
+  let validationFailed = false;
+  try {
+    const missing = await versionApi.validateVersionFiles(effectiveInstanceName.value);
+    missingFileCount.value = missing.length;
+  } catch (e) {
+    validationFailed = true;
+    logError('Failed to validate installed files', e, 'InstallModpackView');
+  } finally {
+    validatingFiles.value = false;
+    postInstallChecked.value = true;
+  }
+
+  if (missingFileCount.value === 0) {
+    finishInstall(
+      acknowledgedManual
+        ? t('installModpack.installDoneManualFiles', {
+            name: effectiveInstanceName.value,
+            count: manualDownloads.value.length,
+          })
+        : validationFailed
+          ? t('installModpack.installDoneUnvalidated', { name: effectiveInstanceName.value })
+          : t('installModpack.installDoneValidated', { name: effectiveInstanceName.value }),
+    );
+    return;
+  }
+
+  // 默认直接补齐缺失的原版文件，不再让用户确认
+  awaitingPostInstall.value = true;
+  void completeMissingFiles();
+}
+
+async function copyManualUrls() {
+  const urls = manualDownloads.value.map((file) => file.url).filter(Boolean).join('\n');
+  const ok = await copyText(urls);
+  if (ok) {
+    notificationStore.info(t('installModpack.urlsCopied'), undefined);
   }
 }
 
@@ -907,6 +993,7 @@ function closeInstallPanel() {
   completingFiles.value = false;
   completionError.value = null;
   versionDownload.value = null;
+  manualDownloads.value = [];
 }
 
 function formatBytes(bytes: number): string {
@@ -967,6 +1054,10 @@ onUnmounted(() => {
   max-height: 300px;
   overflow-y: auto;
   padding-right: 4px;
+}
+
+.manual-file + .manual-file {
+  margin-top: 2px;
 }
 
 .file-row {

@@ -4,6 +4,7 @@
 
 use crate::errors::LauncherError;
 use crate::models::modpack::*;
+use crate::services::curseforge::CfManualFile;
 use crate::services::modpack_exporter;
 use crate::services::modpack_installer::{self, LocalModpackPreview};
 
@@ -65,7 +66,7 @@ pub async fn preview_local_modpack(
 pub async fn install_local_modpack(
     options: LocalModpackInstallOptions,
     window: tauri::Window,
-) -> Result<(), LauncherError> {
+) -> Result<Vec<CfManualFile>, LauncherError> {
     modpack_installer::get_installer()
         .install_local_modpack(options, &window)
         .await

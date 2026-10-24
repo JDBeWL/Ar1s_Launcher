@@ -3,6 +3,8 @@
 //! 挂出配置、下载、实例、Java、内存、启动、加载器与正版登录等业务子模块
 
 pub mod config;
+pub mod cf_modpack_format;
+pub mod curseforge;
 pub mod diagnostics;
 pub mod download;
 pub mod file_verification;
