@@ -4,7 +4,9 @@
 
 use crate::errors::LauncherError;
 use crate::models::InstanceInfo;
+use crate::models::InstanceSettings;
 use crate::services::instance::{self, ModInfo};
+use crate::services::instance_settings;
 use crate::services::loaders::LoaderType;
 use crate::utils::file_utils::{InstanceNameValidation, validate_instance_name};
 
@@ -65,6 +67,19 @@ pub async fn launch_instance(
         window,
     )
     .await
+}
+
+#[tauri::command]
+pub fn get_instance_settings(instance_name: String) -> Result<InstanceSettings, LauncherError> {
+    instance_settings::load(&instance_name)
+}
+
+#[tauri::command]
+pub async fn set_instance_settings(
+    instance_name: String,
+    settings: InstanceSettings,
+) -> Result<(), LauncherError> {
+    run_blocking(move || instance_settings::save(&instance_name, settings)).await
 }
 
 /// 列出实例模组：每个 jar 都要打开读 fabric.mod.json / mods.toml，几百个模组时

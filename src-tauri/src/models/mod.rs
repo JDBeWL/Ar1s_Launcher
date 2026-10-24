@@ -23,6 +23,13 @@ pub fn default_false() -> bool {
     false
 }
 
+pub const MIN_SAVE_BACKUP_RETENTION: u32 = 1;
+pub const MAX_SAVE_BACKUP_RETENTION: u32 = 50;
+
+pub fn default_save_backup_retention() -> u32 {
+    3
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
@@ -161,6 +168,12 @@ pub struct GameConfig {
     pub ms_expires_at: Option<i64>,
     #[serde(default)]
     pub jvm_advanced: JvmAdvancedOptions,
+    /// 模组更新前是否自动备份存档；默认关闭
+    #[serde(default = "default_false")]
+    pub save_auto_backup: bool,
+    /// 自动备份每个世界保留的份数（1-50）
+    #[serde(default = "default_save_backup_retention")]
+    pub save_backup_retention: u32,
 }
 
 impl Default for GameConfig {
@@ -194,6 +207,8 @@ impl Default for GameConfig {
             ms_refresh_token: None,
             ms_expires_at: None,
             jvm_advanced: JvmAdvancedOptions::default(),
+            save_auto_backup: false,
+            save_backup_retention: default_save_backup_retention(),
         }
     }
 }
@@ -242,6 +257,9 @@ pub struct LaunchOptions {
     pub uuid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_java_path: Option<String>,
+    /// 实例级覆盖；None 表示全部跟随全局
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_settings: Option<crate::models::InstanceSettings>,
     /// 判据不过、但用户已经看过诊断报告并坚持启动
     #[serde(default)]
     pub force_java_mismatch: bool,
@@ -366,7 +384,12 @@ pub struct InstanceInfo {
     pub auto_memory_mb: Option<u32>,
 }
 
+pub mod instance_settings;
 pub mod modpack;
+pub mod saves;
+
+pub use instance_settings::InstanceSettings;
+pub use saves::{SaveBackupInfo, SaveBackupKind, SaveImportSummary, SaveInfo};
 
 #[cfg(test)]
 mod tests {

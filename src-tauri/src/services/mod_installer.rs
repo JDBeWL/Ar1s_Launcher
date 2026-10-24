@@ -363,6 +363,9 @@ impl ModInstaller {
         };
         let final_path = context.mods_dir.join(&final_name);
 
+        // 自动备份失败会中止更新，不能出现“文件换了但存档没备份”的情况
+        crate::services::saves::auto_backup_before_update(&instance_name).await?;
+
         // 替换旧文件走 replace_with_backup：先改名成 .bak 再换新的进来，失败会回滚
         file_utils::replace_file_atomically(&staged_path, &final_path)?;
         // 旧文件名可能与新文件名不同（版本换了、禁用状态变了），残留的旧文件要单独删

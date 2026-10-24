@@ -76,7 +76,13 @@ pub async fn check_java_compatibility(
             req.target
         );
 
-        let current_java_path = config.java_path.clone();
+        let instance_settings =
+            crate::services::instance_settings::load(&mc_version).unwrap_or_default();
+        let current_java_path = instance_settings
+            .java_path
+            .clone()
+            .or_else(|| config.java_path.clone());
+        let auto_match_enabled = config.auto_match_java && instance_settings.java_path.is_none();
         let current_java_version = current_java_path
             .as_deref()
             .and_then(java::detect_java_version);
@@ -116,7 +122,7 @@ pub async fn check_java_compatibility(
             recommended_java_version,
             recommended_java_optimal,
             recommended_java_warning,
-            auto_match_enabled: config.auto_match_java,
+            auto_match_enabled,
         })
     })
     .await

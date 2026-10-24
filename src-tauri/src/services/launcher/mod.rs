@@ -9,6 +9,7 @@ pub mod isolation;
 pub mod java;
 pub mod java_requirement;
 mod natives;
+mod overrides;
 mod process;
 mod version_json;
 
@@ -164,6 +165,7 @@ pub async fn launch_minecraft(
     })
     .await?;
     let config = (*load_config()?).clone();
+    let effective = overrides::resolve_overrides(&config, &options);
 
     let game_dir = java::resolve_game_dir(&config.game_dir);
     let version_dir = file_utils::version_dir(&game_dir.join("versions"), &options.version)?;
@@ -317,6 +319,10 @@ pub async fn launch_minecraft(
         .as_str()
         .unwrap_or(&options.version);
 
+    // build_arguments 与后面的 --width/--height 兜底都只读 options，这里统一换成生效值
+    options.window_width = effective.window_width;
+    options.window_height = effective.window_height;
+
     // build_arguments 会打开多个 jar 判 F3 实现、读 classpath 文件，也是同步活
     let (jvm_args, game_args_vec) = {
         let version_json = version_json.clone();
@@ -332,6 +338,7 @@ pub async fn launch_minecraft(
             access_token: options.access_token.clone(),
             uuid: options.uuid.clone(),
             override_java_path: options.override_java_path.clone(),
+            instance_settings: options.instance_settings.clone(),
             force_java_mismatch: options.force_java_mismatch,
         };
         let uuid = uuid.clone();
@@ -371,11 +378,15 @@ pub async fn launch_minecraft(
             .map_err(|e| LauncherError::Custom(format!("模组扫描任务异常终止: {}", e)))?
     };
 
-    let mut java_path = if let Some(ref override_path) = options.override_java_path {
-        emit(
-            "log-info",
-            format!("使用临时指定的 Java: {}", override_path),
-        );
+    let mut java_path = if let Some(ref override_path) = effective.java_path {
+        if options.override_java_path.is_some() {
+            emit(
+                "log-info",
+                format!("使用临时指定的 Java: {}", override_path),
+            );
+        } else {
+            emit("log-info", format!("使用实例指定 Java: {}", override_path));
+        }
         override_path.clone()
     } else if config.auto_match_java {
         // 候选装配可能触发全盘扫描 + 起 JVM 子进程探测（冷缓存时秒级），不能占着 async worker
@@ -483,7 +494,10 @@ pub async fn launch_minecraft(
     .map_err(|e| LauncherError::Custom(format!("Java 探测任务异常终止: {}", e)))?;
 
     let lwjgl_lib_path = natives_dir.to_string_lossy().to_string();
-    let memory_mb = if config.auto_memory_enabled {
+    let memory_mb = if let Some(memory) = effective.memory_mb {
+        emit("log-info", format!("使用实例指定内存: {} MB", memory));
+        memory
+    } else if config.auto_memory_enabled {
         let plan = plan_auto_memory(
             &options.version,
             profile.loader != java_requirement::LoaderKind::Vanilla,
@@ -513,7 +527,7 @@ pub async fn launch_minecraft(
         emit("log-warning", format!("内存设置警告: {}", e));
     }
 
-    let mut final_args = optimize_jvm_memory_args(memory_mb, java_version, &config.jvm_advanced);
+    let mut final_args = optimize_jvm_memory_args(memory_mb, java_version, &effective.jvm_advanced);
 
     final_args.extend([
         format!("-Djava.library.path={}", lwjgl_lib_path),

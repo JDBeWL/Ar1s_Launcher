@@ -449,6 +449,42 @@ export interface GameConfig {
   fullscreen: boolean;
   last_selected_version: string | null;
   auth_type: 'offline' | 'microsoft';
+  jvm_advanced: JvmAdvancedOptions;
+  save_auto_backup: boolean;
+  save_backup_retention: number;
+}
+
+/** 对应后端 InstanceSettings；null 表示跟随全局 */
+export interface InstanceSettings {
+  javaPath: string | null;
+  memoryMb: number | null;
+  jvmExtraArgs: string | null;
+  windowWidth: number | null;
+  windowHeight: number | null;
+}
+
+export interface SaveInfo {
+  folder: string;
+  displayName: string;
+  lastPlayed: number | null;
+  size: number;
+  iconDataUrl: string | null;
+}
+
+export type SaveBackupKind = 'manual' | 'auto' | 'preRestore';
+
+export interface SaveBackupInfo {
+  world: string;
+  fileName: string;
+  displayName: string;
+  createdAt: number;
+  size: number;
+  kind: SaveBackupKind;
+}
+
+export interface SaveImportSummary {
+  imported: string[];
+  skipped: string[];
 }
 
 /** 对应后端 crash_diagnosis，camelCase */

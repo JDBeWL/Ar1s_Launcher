@@ -9,6 +9,7 @@ export {
   loaderApi,
   javaApi,
   configApi,
+  saveApi,
   userApi,
   modpackApi,
   modApi,

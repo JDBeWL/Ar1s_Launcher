@@ -7,8 +7,10 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import InstanceAvatar from '../components/instance/InstanceAvatar.vue';
+import InstanceSettingsPanel from '../components/instance/InstanceSettingsPanel.vue';
 import ModsPanel from '../components/instance/ModsPanel.vue';
 import ResourcePacksPanel from '../components/instance/ResourcePacksPanel.vue';
+import SavesPanel from '../components/instance/SavesPanel.vue';
 import ShaderPacksPanel from '../components/instance/ShaderPacksPanel.vue';
 import ExportModpackDialog from '../components/instance/ExportModpackDialog.vue';
 import { useNotificationStore } from '../stores/notificationStore';
@@ -25,7 +27,7 @@ const notificationStore = useNotificationStore();
 const { launchInstance: startInstance } = useGameLaunch();
 const { t } = useI18n();
 
-const tab = ref<'mods' | 'settings' | 'resourcepacks' | 'shaderpacks'>('mods');
+const tab = ref<'mods' | 'settings' | 'resourcepacks' | 'shaderpacks' | 'saves'>('mods');
 
 const instanceName = computed(() => String(route.params.name ?? ''));
 
@@ -171,6 +173,10 @@ onMounted(() => {
           <v-icon start size="18">mdi-shimmer</v-icon>
           {{ t('instanceDetail.tabShaderPacks') }}
         </v-tab>
+        <v-tab value="saves">
+          <v-icon start size="18">mdi-content-save-outline</v-icon>
+          {{ t('instanceDetail.tabSaves') }}
+        </v-tab>
       </v-tabs>
 
       <v-window v-model="tab">
@@ -184,6 +190,8 @@ onMounted(() => {
         </v-window-item>
 
         <v-window-item value="settings">
+          <InstanceSettingsPanel :instance-name="instance.name" />
+
           <v-card variant="flat" color="surface-container">
             <v-card-text class="pa-4">
               <div class="text-title-small mb-3">{{ t('instanceDetail.instanceInfo') }}</div>
@@ -215,10 +223,6 @@ onMounted(() => {
 
               <v-divider class="my-4" />
 
-              <v-alert type="info" variant="tonal" density="comfortable">
-                {{ t('instanceDetail.perInstanceHint') }}
-              </v-alert>
-
               <div class="d-flex ga-2 mt-4">
                 <v-btn variant="tonal" prepend-icon="mdi-folder-open-outline" @click="openFolder">
                   {{ t('instanceDetail.openInstanceFolder') }}
@@ -248,6 +252,10 @@ onMounted(() => {
             :game-version="instance.gameVersion"
             @changed="loadInstance(true)"
           />
+        </v-window-item>
+
+        <v-window-item value="saves">
+          <SavesPanel :instance-name="instance.name" />
         </v-window-item>
       </v-window>
     </template>

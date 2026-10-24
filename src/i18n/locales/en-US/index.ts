@@ -9,6 +9,7 @@ import instance from './instance';
 import mods from './mods';
 import resourcePacks from './resourcePacks';
 import shaderPacks from './shaderPacks';
+import saves from './saves';
 import settings from './settings';
 import addInstance from './addInstance';
 import launch from './launch';
@@ -26,6 +27,7 @@ export default mergeMessages(
   mods,
   resourcePacks,
   shaderPacks,
+  saves,
   settings,
   addInstance,
   launch,

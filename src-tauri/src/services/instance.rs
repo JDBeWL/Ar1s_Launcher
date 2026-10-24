@@ -249,6 +249,9 @@ pub async fn create_instance(
         return Err(e.into());
     }
 
+    // 基础版本如果本身带实例设置，新实例不应继承
+    let _ = fs::remove_file(dest_dir.join(crate::services::instance_settings::SETTINGS_FILE_NAME));
+
     send_progress(40, "配置实例...", false);
 
     let old_json_path = dest_dir.join(format!("{}.json", base_version_id));
@@ -845,16 +848,25 @@ fn get_instances_filtered_sync(
                         }
                     }
 
-                    let auto_memory_mb = auto_memory_available_mb.map(|available| {
-                        compute_auto_memory(
-                            game_version.as_deref().unwrap_or(&version_id),
-                            loader_type.as_deref().is_some_and(|lt| lt != "None"),
-                            mod_count.unwrap_or(0) as usize,
-                            available,
-                            false,
-                        )
-                        .memory_mb
-                    });
+                    // 实例自己指定了内存时，卡片上的“自动内存”不再适用
+                    let has_memory_override = auto_memory_available_mb.is_some()
+                        && crate::services::instance_settings::read_from_instance_dir(&path)
+                            .map(|settings| settings.memory_mb.is_some())
+                            .unwrap_or(false);
+                    let auto_memory_mb = if has_memory_override {
+                        None
+                    } else {
+                        auto_memory_available_mb.map(|available| {
+                            compute_auto_memory(
+                                game_version.as_deref().unwrap_or(&version_id),
+                                loader_type.as_deref().is_some_and(|lt| lt != "None"),
+                                mod_count.unwrap_or(0) as usize,
+                                available,
+                                false,
+                            )
+                            .memory_mb
+                        })
+                    };
 
                     let created = entry
                         .metadata()
@@ -1560,6 +1572,8 @@ pub async fn launch_instance(
         crate::models::AuthType::Offline => None,
     };
 
+    let instance_settings = crate::services::instance_settings::load(&instance_name).ok();
+
     let launch_options = LaunchOptions {
         version: instance_name,
         username: config
@@ -1574,6 +1588,7 @@ pub async fn launch_instance(
         access_token: None,
         uuid: None,
         override_java_path,
+        instance_settings,
         force_java_mismatch,
     };
 

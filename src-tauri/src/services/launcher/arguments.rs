@@ -371,6 +371,7 @@ mod tests {
             access_token: None,
             uuid: None,
             override_java_path: None,
+            instance_settings: None,
             force_java_mismatch: false,
         }
     }

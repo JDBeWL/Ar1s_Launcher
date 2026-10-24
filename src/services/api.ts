@@ -24,7 +24,11 @@ import type {
   MicrosoftLoginResult,
   JavaCompatibilityResult,
   GameConfig,
+  InstanceSettings,
   MemoryStats,
+  SaveInfo,
+  SaveBackupInfo,
+  SaveImportSummary,
   ProxySettings,
   ProxyTestResult,
   ResourcePackInfo,
@@ -148,6 +152,14 @@ export const instanceApi = {
 
   async launchInstance(instanceName: string, overrideJavaPath?: string, forceJavaMismatch?: boolean): Promise<void> {
     await invokeCommand('launch_instance', { instanceName, overrideJavaPath, forceJavaMismatch });
+  },
+
+  async getInstanceSettings(instanceName: string): Promise<InstanceSettings> {
+    return dedupedInvoke<InstanceSettings>('get_instance_settings', { instanceName });
+  },
+
+  async setInstanceSettings(instanceName: string, settings: InstanceSettings): Promise<void> {
+    await invokeCommand('set_instance_settings', { instanceName, settings });
   },
 
   async validateInstanceName(name: string): Promise<InstanceNameValidation> {
@@ -325,6 +337,36 @@ export const configApi = {
 
   async checkMemoryWarning(memoryMb: number): Promise<string | null> {
     return dedupedInvoke<string | null>('check_memory_warning', { memoryMb });
+  },
+};
+
+export const saveApi = {
+  async getSaves(instanceName: string): Promise<SaveInfo[]> {
+    return invokeCommand<SaveInfo[]>('get_instance_saves', { instanceName });
+  },
+
+  async getBackups(instanceName: string): Promise<SaveBackupInfo[]> {
+    return invokeCommand<SaveBackupInfo[]>('get_save_backups', { instanceName });
+  },
+
+  async backup(instanceName: string, world: string): Promise<SaveBackupInfo> {
+    return invokeCommand<SaveBackupInfo>('backup_save', { instanceName, world });
+  },
+
+  async restore(instanceName: string, world: string, fileName: string): Promise<void> {
+    await invokeCommand('restore_save_backup', { instanceName, world, fileName });
+  },
+
+  async deleteBackup(instanceName: string, world: string, fileName: string): Promise<void> {
+    await invokeCommand('delete_save_backup', { instanceName, world, fileName });
+  },
+
+  async importSaves(instanceName: string, sourcePaths: string[]): Promise<SaveImportSummary> {
+    return invokeCommand<SaveImportSummary>('import_saves', { instanceName, sourcePaths });
+  },
+
+  async openSavesFolder(instanceName: string): Promise<void> {
+    await invokeCommand('open_saves_folder', { instanceName });
   },
 };
 
@@ -749,6 +791,7 @@ export const api = {
   loader: loaderApi,
   java: javaApi,
   config: configApi,
+  save: saveApi,
   user: userApi,
   modpack: modpackApi,
   mod: modApi,

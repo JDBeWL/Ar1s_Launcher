@@ -2,14 +2,15 @@
 //!
 //! 挂出配置、下载、实例、Java、内存、启动、加载器与正版登录等业务子模块
 
-pub mod config;
 pub mod cf_modpack_format;
+pub mod config;
 pub mod curseforge;
 pub mod diagnostics;
 pub mod download;
 pub mod file_verification;
 pub mod http_client;
 pub mod instance;
+pub mod instance_settings;
 pub mod java;
 pub mod launcher;
 pub mod loaders;
@@ -23,5 +24,6 @@ pub mod modrinth;
 pub mod proxy;
 pub mod resourcepack;
 pub mod resourcepack_installer;
+pub mod saves;
 pub mod shaderpack;
 pub mod shaderpack_installer;

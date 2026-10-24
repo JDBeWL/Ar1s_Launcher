@@ -361,6 +361,8 @@ fn create_default_config(is_first_run: bool) -> Result<GameConfig, LauncherError
         ms_refresh_token: None,
         ms_expires_at: None,
         jvm_advanced: crate::models::JvmAdvancedOptions::default(),
+        save_auto_backup: false,
+        save_backup_retention: crate::models::default_save_backup_retention(),
     };
 
     if is_first_run
@@ -574,6 +576,8 @@ enum ConfigKey {
     ThemePalette,
     ThemeMode,
     UiLanguage,
+    SaveAutoBackup,
+    SaveBackupRetention,
 }
 
 impl ConfigKey {
@@ -598,6 +602,8 @@ impl ConfigKey {
             "themePalette" => Some(Self::ThemePalette),
             "themeMode" => Some(Self::ThemeMode),
             "uiLanguage" => Some(Self::UiLanguage),
+            "saveAutoBackup" => Some(Self::SaveAutoBackup),
+            "saveBackupRetention" => Some(Self::SaveBackupRetention),
             _ => None,
         }
     }
@@ -626,6 +632,8 @@ impl ConfigKey {
             Self::ThemePalette => config.theme_palette.clone(),
             Self::ThemeMode => config.theme_mode.clone(),
             Self::UiLanguage => config.ui_language.clone(),
+            Self::SaveAutoBackup => Some(config.save_auto_backup.to_string()),
+            Self::SaveBackupRetention => Some(config.save_backup_retention.to_string()),
         }
     }
 
@@ -717,6 +725,27 @@ impl ConfigKey {
                         ));
                     }
                 }
+            }
+            Self::SaveAutoBackup => {
+                config.save_auto_backup = value
+                    .parse()
+                    .map_err(|_| LauncherError::Custom("自动备份设置值无效".to_string()))?
+            }
+            Self::SaveBackupRetention => {
+                let retention: u32 = value
+                    .parse()
+                    .map_err(|_| LauncherError::Custom("自动备份保留份数无效".to_string()))?;
+                if !(crate::models::MIN_SAVE_BACKUP_RETENTION
+                    ..=crate::models::MAX_SAVE_BACKUP_RETENTION)
+                    .contains(&retention)
+                {
+                    return Err(LauncherError::Custom(format!(
+                        "自动备份保留份数必须在 {} 到 {} 之间",
+                        crate::models::MIN_SAVE_BACKUP_RETENTION,
+                        crate::models::MAX_SAVE_BACKUP_RETENTION
+                    )));
+                }
+                config.save_backup_retention = retention;
             }
         }
         Ok(())
@@ -1050,6 +1079,24 @@ mod tests {
         // 返回 true 才会触发一次写回，写回成功后坏文件被删掉
         assert!(super::merge_legacy_credentials_from(&path, &mut config));
         assert!(config.ms_access_token.is_none());
+    }
+
+    #[test]
+    fn test_save_backup_settings_defaults_and_validation() {
+        let config = crate::models::GameConfig::default();
+        assert!(!config.save_auto_backup);
+        assert_eq!(config.save_backup_retention, 3);
+
+        let mut config = crate::models::GameConfig::default();
+        let key = ConfigKey::SaveAutoBackup;
+        key.set_value(&mut config, "true".to_string()).unwrap();
+        assert!(config.save_auto_backup);
+
+        let key = ConfigKey::SaveBackupRetention;
+        key.set_value(&mut config, "10".to_string()).unwrap();
+        assert_eq!(config.save_backup_retention, 10);
+        assert!(key.set_value(&mut config, "0".to_string()).is_err());
+        assert!(key.set_value(&mut config, "51".to_string()).is_err());
     }
 
     #[test]
