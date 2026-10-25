@@ -487,6 +487,39 @@ export interface SaveImportSummary {
   skipped: string[];
 }
 
+export type LaunchOutcome = 'running' | 'exited' | 'crashed' | 'unknown';
+
+export interface LaunchRecord {
+  id: number;
+  startedAt: number;
+  endedAt: number | null;
+  durationSecs: number | null;
+  exitCode: number | null;
+  outcome: LaunchOutcome;
+  logFile: string | null;
+  crashReport: string | null;
+}
+
+export interface LogTail {
+  lines: string[];
+  truncated: boolean;
+  path: string;
+}
+
+export interface CrashReportInfo {
+  fileName: string;
+  size: number;
+  modifiedAt: number;
+}
+
+export interface CrashReportText {
+  fileName: string;
+  content: string;
+  truncated: boolean;
+}
+
+export type ContentTarget = 'latestLog' | 'logsFolder' | 'crashReportsFolder';
+
 /** 对应后端 crash_diagnosis，camelCase */
 export type CrashConfidence = 'high' | 'medium';
 

@@ -51,6 +51,7 @@ export default {
     tabResourcePacks: 'Resource packs',
     tabShaderPacks: 'Shaders',
     tabSaves: 'Saves',
+    tabLogs: 'Logs',
     instanceInfo: 'Instance info',
     minecraftVersion: 'Minecraft version',
     loader: 'Loader',
@@ -60,7 +61,6 @@ export default {
     openInstanceFolder: 'Open instance folder',
     openGlobalSettings: 'Open global settings',
     instanceSettings: {
-      settingsTitle: 'Instance settings',
       effectiveNextLaunch: 'Changes take effect on the next launch',
       saved: 'Instance settings saved',
       saveFailed: 'Failed to save instance settings',

@@ -272,9 +272,6 @@ watch(
       <v-btn variant="text" size="small" prepend-icon="mdi-update" :loading="checking" @click="checkUpdates">
         {{ t('mods.checkUpdates') }}
       </v-btn>
-      <v-btn icon size="small" variant="text" :aria-label="t('mods.refreshList')" :loading="loading" @click="loadMods">
-        <v-icon size="18">mdi-refresh</v-icon>
-      </v-btn>
 
       <v-spacer />
 
@@ -287,6 +284,9 @@ watch(
         @click="updateAll"
       >
         {{ t('mods.updateAll', { count: updatableCount }) }}
+      </v-btn>
+      <v-btn icon size="small" variant="text" :aria-label="t('mods.refreshList')" :loading="loading" @click="loadMods">
+        <v-icon size="18">mdi-refresh</v-icon>
       </v-btn>
     </div>
 

@@ -51,6 +51,7 @@ export default {
     tabResourcePacks: '资源包',
     tabShaderPacks: '光影',
     tabSaves: '存档',
+    tabLogs: '日志',
     instanceInfo: '实例信息',
     minecraftVersion: 'Minecraft 版本',
     loader: '加载器',
@@ -60,7 +61,6 @@ export default {
     openInstanceFolder: '打开实例文件夹',
     openGlobalSettings: '打开全局设置',
     instanceSettings: {
-      settingsTitle: '实例设置',
       effectiveNextLaunch: '设置在下一次启动时生效',
       saved: '实例设置已保存',
       saveFailed: '保存实例设置失败',

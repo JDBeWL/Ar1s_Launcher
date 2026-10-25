@@ -268,11 +268,6 @@ watch(
 
 <template>
   <div class="settings-group mb-4">
-    <div class="d-flex align-center justify-space-between mb-2">
-      <div class="text-title-medium">{{ t('instanceDetail.instanceSettings.settingsTitle') }}</div>
-      <v-progress-circular v-if="saving" indeterminate size="18" width="2" color="primary" />
-    </div>
-
     <v-card variant="flat" color="surface-container" class="mb-3">
       <v-card-text class="pa-4">
         <div class="d-flex align-center justify-space-between mb-2">
@@ -534,8 +529,11 @@ watch(
       </v-card-text>
     </v-card>
 
-    <div class="text-body-small text-on-surface-variant">
-      {{ t('instanceDetail.instanceSettings.effectiveNextLaunch') }}
+    <div class="d-flex align-center justify-space-between">
+      <div class="text-body-small text-on-surface-variant">
+        {{ t('instanceDetail.instanceSettings.effectiveNextLaunch') }}
+      </div>
+      <v-progress-circular v-if="saving" indeterminate size="16" width="2" color="primary" />
     </div>
   </div>
 </template>

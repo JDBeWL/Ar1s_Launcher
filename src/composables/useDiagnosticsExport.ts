@@ -11,6 +11,8 @@ import { getErrorMessage } from '../utils/format';
 import { logError } from '../utils/logger';
 import type { GameInstance } from '../types/events';
 
+type InstanceRef = Pick<GameInstance, 'name'>;
+
 function defaultFileName(instanceName: string): string {
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, '0');
@@ -23,7 +25,7 @@ export function useDiagnosticsExport() {
   const notificationStore = useNotificationStore();
   const exportingInstance = ref<string | null>(null);
 
-  async function exportDiagnostics(instance: GameInstance): Promise<void> {
+  async function exportDiagnostics(instance: InstanceRef): Promise<void> {
     if (exportingInstance.value) return;
     exportingInstance.value = instance.name;
 

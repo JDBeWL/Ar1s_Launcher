@@ -4,9 +4,10 @@
 
 use super::crash_diagnosis::{self, LaunchContext};
 use crate::errors::LauncherError;
+use crate::services::instance_logs::{self, LaunchFinish};
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
@@ -105,10 +106,40 @@ fn redacted_args(args: &[String]) -> Vec<&str> {
     out
 }
 
+struct LaunchHistory {
+    instance_dir: PathBuf,
+    record_id: Option<i64>,
+    started_at_ms: i64,
+}
+
+fn finish_launch_history(
+    history: &LaunchHistory,
+    content_root: &Path,
+    exit_code: Option<i32>,
+    duration_secs: u64,
+    crash_report: Option<String>,
+    archive_log: bool,
+) {
+    let Some(record_id) = history.record_id else {
+        return;
+    };
+    instance_logs::record_launch_finished(LaunchFinish {
+        instance_dir: history.instance_dir.clone(),
+        content_root: content_root.to_path_buf(),
+        history_id: record_id,
+        started_at_ms: history.started_at_ms,
+        exit_code,
+        duration_secs,
+        crash_report,
+        archive_log,
+    });
+}
+
 pub fn spawn_and_monitor_process(
     java_path: &str,
     final_args: Vec<String>,
     working_dir: &Path,
+    instance_dir: PathBuf,
     launch_ctx: LaunchContext,
     window: tauri::Window,
     run_lock: crate::utils::file_lock::FileLock,
@@ -141,11 +172,19 @@ pub fn spawn_and_monitor_process(
         format!("游戏进程已启动，PID: {}", pid),
     );
 
+    let started_at_ms = super::now_millis();
+    let history = LaunchHistory {
+        record_id: instance_logs::record_launch_started(&instance_dir, started_at_ms),
+        instance_dir,
+        started_at_ms,
+    };
+
     spawn_monitor_thread(
         child,
         window,
         pid,
         working_dir.to_path_buf(),
+        history,
         launch_ctx,
         run_lock,
     );
@@ -158,6 +197,7 @@ fn spawn_monitor_thread(
     window: tauri::Window,
     pid: u32,
     working_dir: std::path::PathBuf,
+    history: LaunchHistory,
     launch_ctx: crash_diagnosis::LaunchContext,
     run_lock: crate::utils::file_lock::FileLock,
 ) {
@@ -251,12 +291,20 @@ fn spawn_monitor_thread(
                     &lines,
                     &working_dir,
                     &launch_ctx,
+                    &history,
                     elapsed.as_secs(),
-                    SystemTime::now() - elapsed,
                 );
             }
             Ok(None) => {
                 is_running_main.store(false, Ordering::SeqCst);
+                finish_launch_history(
+                    &history,
+                    &working_dir,
+                    None,
+                    start_time.elapsed().as_secs(),
+                    None,
+                    false,
+                );
                 let _ = window.emit(
                     "log-warning",
                     format!("游戏进程 (PID: {}) 运行超时，停止监控", pid),
@@ -271,6 +319,14 @@ fn spawn_monitor_thread(
             }
             Err(e) => {
                 is_running_main.store(false, Ordering::SeqCst);
+                finish_launch_history(
+                    &history,
+                    &working_dir,
+                    None,
+                    start_time.elapsed().as_secs(),
+                    None,
+                    false,
+                );
                 let _ = window.emit("log-error", format!("监控游戏进程时出错: {}", e));
                 let _ = window.emit("minecraft-error", format!("监控游戏进程时出错: {}", e));
             }
@@ -463,9 +519,11 @@ fn handle_process_exit(
     output_lines: &[String],
     working_dir: &Path,
     launch_ctx: &LaunchContext,
+    history: &LaunchHistory,
     runtime_secs: u64,
-    launched_at: SystemTime,
 ) {
+    let launched_at =
+        SystemTime::UNIX_EPOCH + Duration::from_millis(history.started_at_ms.max(0) as u64);
     let exit_code = status.code();
     let _ = window.emit(
         "log-debug",
@@ -473,10 +531,15 @@ fn handle_process_exit(
     );
 
     let mut message = exit_message(exit_code);
+    let mut crash_report_name = None;
 
     if exit_code.unwrap_or(-1) != 0 {
         // 关闭看门狗是玩家点了退出之后收尾超时，不是启动崩溃：弹“启动失败”会冤到模组
         let new_crash_report = find_new_crash_report(working_dir, launched_at);
+        crash_report_name = new_crash_report
+            .as_ref()
+            .and_then(|(path, _)| path.file_name().and_then(|name| name.to_str()))
+            .map(str::to_string);
         let shutdown_watchdog = new_crash_report
             .as_ref()
             .is_some_and(|(_, report)| is_client_shutdown_watchdog(report));
@@ -530,6 +593,15 @@ fn handle_process_exit(
             let _ = window.emit("minecraft-crash", &diagnosis);
         }
     }
+
+    finish_launch_history(
+        history,
+        working_dir,
+        exit_code,
+        runtime_secs,
+        crash_report_name,
+        true,
+    );
 
     let _ = window.emit("minecraft-exited", message);
 }

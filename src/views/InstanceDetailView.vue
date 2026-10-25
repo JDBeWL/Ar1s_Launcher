@@ -8,6 +8,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import InstanceAvatar from '../components/instance/InstanceAvatar.vue';
 import InstanceSettingsPanel from '../components/instance/InstanceSettingsPanel.vue';
+import LogsPanel from '../components/instance/LogsPanel.vue';
 import ModsPanel from '../components/instance/ModsPanel.vue';
 import ResourcePacksPanel from '../components/instance/ResourcePacksPanel.vue';
 import SavesPanel from '../components/instance/SavesPanel.vue';
@@ -27,7 +28,7 @@ const notificationStore = useNotificationStore();
 const { launchInstance: startInstance } = useGameLaunch();
 const { t } = useI18n();
 
-const tab = ref<'mods' | 'settings' | 'resourcepacks' | 'shaderpacks' | 'saves'>('mods');
+const tab = ref<'mods' | 'settings' | 'resourcepacks' | 'shaderpacks' | 'saves' | 'logs'>('settings');
 
 const instanceName = computed(() => String(route.params.name ?? ''));
 
@@ -157,13 +158,13 @@ onMounted(() => {
       </v-card>
 
       <v-tabs v-model="tab" color="primary" class="mb-3">
-        <v-tab value="mods">
-          <v-icon start size="18">mdi-puzzle-outline</v-icon>
-          {{ t('instanceDetail.tabMods') }}
-        </v-tab>
         <v-tab value="settings">
           <v-icon start size="18">mdi-cog-outline</v-icon>
           {{ t('instanceDetail.tabSettings') }}
+        </v-tab>
+        <v-tab value="mods">
+          <v-icon start size="18">mdi-puzzle-outline</v-icon>
+          {{ t('instanceDetail.tabMods') }}
         </v-tab>
         <v-tab value="resourcepacks">
           <v-icon start size="18">mdi-texture-box</v-icon>
@@ -176,6 +177,10 @@ onMounted(() => {
         <v-tab value="saves">
           <v-icon start size="18">mdi-content-save-outline</v-icon>
           {{ t('instanceDetail.tabSaves') }}
+        </v-tab>
+        <v-tab value="logs">
+          <v-icon start size="18">mdi-text-box-search-outline</v-icon>
+          {{ t('instanceDetail.tabLogs') }}
         </v-tab>
       </v-tabs>
 
@@ -256,6 +261,10 @@ onMounted(() => {
 
         <v-window-item value="saves">
           <SavesPanel :instance-name="instance.name" />
+        </v-window-item>
+
+        <v-window-item value="logs">
+          <LogsPanel :instance-name="instance.name" />
         </v-window-item>
       </v-window>
     </template>

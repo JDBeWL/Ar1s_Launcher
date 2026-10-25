@@ -10,6 +10,7 @@ pub mod download;
 pub mod file_verification;
 pub mod http_client;
 pub mod instance;
+pub mod instance_logs;
 pub mod instance_settings;
 pub mod java;
 pub mod launcher;

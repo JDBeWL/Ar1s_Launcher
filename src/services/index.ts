@@ -10,6 +10,7 @@ export {
   javaApi,
   configApi,
   saveApi,
+  logApi,
   userApi,
   modpackApi,
   modApi,

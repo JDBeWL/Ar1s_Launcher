@@ -603,6 +603,7 @@ pub async fn launch_minecraft(
         &java_path,
         final_args,
         &working_dir,
+        version_dir.clone(),
         launch_ctx,
         window,
         run_lock,

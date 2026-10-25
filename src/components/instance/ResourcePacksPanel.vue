@@ -373,16 +373,6 @@ watch(
       <v-btn variant="text" size="small" prepend-icon="mdi-update" :loading="checking" @click="checkUpdates">
         {{ t('resourcePacks.checkUpdates') }}
       </v-btn>
-      <v-btn
-        icon
-        size="small"
-        variant="text"
-        :aria-label="t('resourcePacks.refreshList')"
-        :loading="loading"
-        @click="loadPacks"
-      >
-        <v-icon size="18">mdi-refresh</v-icon>
-      </v-btn>
 
       <v-spacer />
 
@@ -395,6 +385,16 @@ watch(
         @click="updateAll"
       >
         {{ t('resourcePacks.updateAll', { count: updatableCount }) }}
+      </v-btn>
+      <v-btn
+        icon
+        size="small"
+        variant="text"
+        :aria-label="t('resourcePacks.refreshList')"
+        :loading="loading"
+        @click="loadPacks"
+      >
+        <v-icon size="18">mdi-refresh</v-icon>
       </v-btn>
     </div>
 

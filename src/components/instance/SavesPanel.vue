@@ -217,37 +217,35 @@ watch(
 
 <template>
   <div class="saves-panel">
-    <v-card variant="flat" color="surface-container" class="mb-3">
-      <v-card-text class="pa-4">
-        <div class="d-flex align-center flex-wrap ga-2">
-          <div class="text-title-medium flex-grow-1">{{ t('saves.savesSection') }}</div>
-          <v-btn
-            variant="tonal"
-            size="small"
-            prepend-icon="mdi-folder-open-outline"
-            :disabled="busyKey !== null"
-            @click="importFolder"
-          >
-            {{ t('saves.importFolder') }}
-          </v-btn>
-          <v-btn
-            variant="tonal"
-            size="small"
-            prepend-icon="mdi-zip-box-outline"
-            :disabled="busyKey !== null"
-            @click="importZip"
-          >
-            {{ t('saves.importZip') }}
-          </v-btn>
-          <v-btn variant="text" size="small" prepend-icon="mdi-folder-outline" @click="openSavesFolder">
-            {{ t('saves.openFolder') }}
-          </v-btn>
-          <v-btn icon size="small" variant="text" :aria-label="t('saves.refresh')" :loading="loading" @click="load">
-            <v-icon>mdi-refresh</v-icon>
-          </v-btn>
-        </div>
-      </v-card-text>
-    </v-card>
+    <div class="d-flex align-center ga-2 mb-3 flex-wrap">
+      <v-btn
+        color="primary"
+        variant="tonal"
+        size="small"
+        prepend-icon="mdi-folder-open-outline"
+        :disabled="busyKey !== null"
+        @click="importFolder"
+      >
+        {{ t('saves.importFolder') }}
+      </v-btn>
+      <v-btn
+        variant="text"
+        size="small"
+        prepend-icon="mdi-zip-box-outline"
+        :disabled="busyKey !== null"
+        @click="importZip"
+      >
+        {{ t('saves.importZip') }}
+      </v-btn>
+      <v-spacer />
+      <v-btn icon size="small" variant="text" :aria-label="t('saves.refresh')" :loading="loading" @click="load">
+        <v-icon size="18">mdi-refresh</v-icon>
+      </v-btn>
+    </div>
+
+    <v-alert v-if="!versionIsolation" type="warning" variant="tonal" density="comfortable" class="mb-3">
+      {{ t('saves.isolationWarning') }}
+    </v-alert>
 
     <v-card variant="flat" color="surface-container" class="mb-3">
       <v-card-text class="pa-4">
@@ -288,114 +286,118 @@ watch(
       </v-card-text>
     </v-card>
 
-    <v-alert v-if="!versionIsolation" type="warning" variant="tonal" density="comfortable" class="mb-3">
-      {{ t('saves.isolationWarning') }}
-    </v-alert>
-
-    <v-card v-if="loading" variant="flat" color="surface-container" class="pa-8">
-      <div class="d-flex align-center justify-center">
-        <v-progress-circular indeterminate color="primary" />
+    <v-card variant="flat" color="surface-container" class="mb-3">
+      <div v-if="loading && saves.length === 0" class="d-flex align-center justify-center pa-10">
+        <v-progress-circular indeterminate size="28" color="primary" />
       </div>
+
+      <div v-else-if="error" class="text-center pa-8">
+        <div class="text-body-medium text-error mb-3">{{ error }}</div>
+        <v-btn size="small" variant="tonal" color="primary" @click="load">{{ t('common.retry') }}</v-btn>
+      </div>
+
+      <div v-else-if="saves.length === 0" class="text-center pa-10 text-on-surface-variant">
+        <v-icon size="40" class="mb-2" color="on-surface-variant">mdi-content-save-off-outline</v-icon>
+        <div class="text-body-medium">{{ t('saves.emptyTitle') }}</div>
+        <div class="text-body-small mt-1">{{ t('saves.emptyHint') }}</div>
+      </div>
+
+      <template v-else>
+        <v-list density="compact" lines="two" bg-color="transparent">
+          <v-list-item v-for="save in saves" :key="save.folder">
+            <template #prepend>
+              <v-avatar size="40" rounded="lg" color="surface-container-high" class="mr-3">
+                <v-img v-if="save.iconDataUrl" :src="save.iconDataUrl" cover>
+                  <template #placeholder>
+                    <v-icon size="20" color="on-surface-variant">mdi-cube-outline</v-icon>
+                  </template>
+                </v-img>
+                <v-icon v-else size="20" color="on-surface-variant">mdi-cube-outline</v-icon>
+              </v-avatar>
+            </template>
+            <v-list-item-title class="text-body-medium">{{ save.displayName }}</v-list-item-title>
+            <v-list-item-subtitle class="text-body-small">
+              {{ save.folder }} · {{ t('saves.lastPlayed', { time: lastPlayedLabel(save) }) }} ·
+              {{ formatFileSize(save.size) }}
+            </v-list-item-subtitle>
+            <template #append>
+              <v-btn
+                size="small"
+                variant="tonal"
+                color="primary"
+                prepend-icon="mdi-content-save-plus-outline"
+                :loading="busyKey === `backup:${save.folder}`"
+                :disabled="busyKey !== null"
+                @click="backupSave(save)"
+              >
+                {{ t('saves.backup') }}
+              </v-btn>
+            </template>
+          </v-list-item>
+        </v-list>
+        <v-divider />
+        <div class="d-flex align-center flex-wrap ga-2 text-body-small text-on-surface-variant pa-3">
+          <span>{{ t('saves.saveCount', { count: saves.length }) }}</span>
+          <v-spacer />
+          <v-btn size="x-small" variant="text" prepend-icon="mdi-folder-open-outline" @click="openSavesFolder">
+            {{ t('saves.openFolder') }}
+          </v-btn>
+        </div>
+      </template>
     </v-card>
 
-    <v-card v-else-if="error" variant="flat" color="surface-container" class="pa-8 text-center">
-      <v-icon size="40" class="mb-2" color="on-surface-variant">mdi-alert-circle-outline</v-icon>
-      <div class="text-body-large mb-4">{{ error }}</div>
-      <v-btn color="primary" variant="tonal" @click="load">{{ t('saves.refresh') }}</v-btn>
+    <v-card v-if="!error && (!loading || backups.length > 0)" variant="flat" color="surface-container">
+      <v-list density="compact" lines="two" bg-color="transparent">
+        <v-list-subheader class="text-title-medium">{{ t('saves.backupSection') }}</v-list-subheader>
+        <v-list-item v-for="backup in backups" :key="`${backup.world}:${backup.fileName}`">
+          <template #prepend>
+            <v-icon size="20" color="on-surface-variant">mdi-archive-outline</v-icon>
+          </template>
+          <v-list-item-title class="text-body-medium">
+            {{ backup.displayName }}
+            <v-chip size="x-small" variant="tonal" class="ml-2">{{ kindLabel(backup.kind) }}</v-chip>
+          </v-list-item-title>
+          <v-list-item-subtitle class="text-body-small">
+            {{ backup.world }} · {{ formatTimeAgo(backup.createdAt) }} · {{ formatFileSize(backup.size) }}
+          </v-list-item-subtitle>
+          <template #append>
+            <div class="d-flex ga-1">
+              <v-btn
+                size="small"
+                variant="tonal"
+                color="primary"
+                prepend-icon="mdi-history"
+                :loading="busyKey === `restore:${backup.world}:${backup.fileName}`"
+                :disabled="busyKey !== null"
+                @click="confirmRestore(backup)"
+              >
+                {{ t('saves.restore') }}
+              </v-btn>
+              <v-btn
+                size="small"
+                variant="text"
+                color="error"
+                prepend-icon="mdi-delete-outline"
+                :loading="busyKey === `delete:${backup.world}:${backup.fileName}`"
+                :disabled="busyKey !== null"
+                @click="confirmDelete(backup)"
+              >
+                {{ t('saves.delete') }}
+              </v-btn>
+            </div>
+          </template>
+        </v-list-item>
+      </v-list>
+      <div v-if="backups.length === 0" class="text-center pa-8 text-body-medium text-on-surface-variant">
+        {{ t('saves.noBackups') }}
+      </div>
+      <template v-else>
+        <v-divider />
+        <div class="text-body-small text-on-surface-variant pa-3">
+          {{ t('saves.backupCount', { count: backups.length }) }}
+        </div>
+      </template>
     </v-card>
-
-    <template v-else>
-      <v-card variant="flat" color="surface-container" class="mb-2">
-        <v-card-text class="pa-3">
-          <v-list v-if="saves.length > 0" density="compact" lines="two" bg-color="surface-container" class="py-0">
-            <v-list-item v-for="save in saves" :key="save.folder">
-              <template #prepend>
-                <v-avatar size="40" rounded color="surface-container-high" class="mr-2">
-                  <v-img v-if="save.iconDataUrl" :src="save.iconDataUrl" cover>
-                    <template #placeholder>
-                      <v-icon size="20" color="on-surface-variant">mdi-cube-outline</v-icon>
-                    </template>
-                  </v-img>
-                  <v-icon v-else size="20" color="on-surface-variant">mdi-cube-outline</v-icon>
-                </v-avatar>
-              </template>
-              <v-list-item-title class="text-body-medium">{{ save.displayName }}</v-list-item-title>
-              <v-list-item-subtitle class="text-body-small">
-                {{ save.folder }} · {{ t('saves.lastPlayed', { time: lastPlayedLabel(save) }) }} ·
-                {{ formatFileSize(save.size) }}
-              </v-list-item-subtitle>
-              <template #append>
-                <v-btn
-                  size="small"
-                  variant="tonal"
-                  color="primary"
-                  prepend-icon="mdi-content-save-plus-outline"
-                  :loading="busyKey === `backup:${save.folder}`"
-                  :disabled="busyKey !== null"
-                  @click="backupSave(save)"
-                >
-                  {{ t('saves.backup') }}
-                </v-btn>
-              </template>
-            </v-list-item>
-          </v-list>
-          <div v-else class="text-center pa-6 text-on-surface-variant">
-            <v-icon size="40" class="mb-2">mdi-content-save-off-outline</v-icon>
-            <div class="text-body-large">{{ t('saves.emptyTitle') }}</div>
-            <div class="text-body-small">{{ t('saves.emptyHint') }}</div>
-          </div>
-        </v-card-text>
-      </v-card>
-
-      <v-card variant="flat" color="surface-container">
-        <v-card-text class="pa-3">
-          <div class="text-title-medium mb-2 px-1">{{ t('saves.backupSection') }}</div>
-          <v-list v-if="backups.length > 0" density="compact" lines="two" bg-color="surface-container" class="py-0">
-            <v-list-item v-for="backup in backups" :key="`${backup.world}:${backup.fileName}`">
-              <template #prepend>
-                <v-icon color="on-surface-variant" class="mr-2">mdi-archive-outline</v-icon>
-              </template>
-              <v-list-item-title class="text-body-medium">
-                {{ backup.displayName }}
-                <v-chip size="x-small" variant="tonal" class="ml-2">{{ kindLabel(backup.kind) }}</v-chip>
-              </v-list-item-title>
-              <v-list-item-subtitle class="text-body-small">
-                {{ backup.world }} · {{ formatTimeAgo(backup.createdAt) }} · {{ formatFileSize(backup.size) }}
-              </v-list-item-subtitle>
-              <template #append>
-                <div class="d-flex ga-1">
-                  <v-btn
-                    size="small"
-                    variant="tonal"
-                    color="primary"
-                    prepend-icon="mdi-history"
-                    :loading="busyKey === `restore:${backup.world}:${backup.fileName}`"
-                    :disabled="busyKey !== null"
-                    @click="confirmRestore(backup)"
-                  >
-                    {{ t('saves.restore') }}
-                  </v-btn>
-                  <v-btn
-                    size="small"
-                    variant="text"
-                    color="error"
-                    prepend-icon="mdi-delete-outline"
-                    :loading="busyKey === `delete:${backup.world}:${backup.fileName}`"
-                    :disabled="busyKey !== null"
-                    @click="confirmDelete(backup)"
-                  >
-                    {{ t('saves.delete') }}
-                  </v-btn>
-                </div>
-              </template>
-            </v-list-item>
-          </v-list>
-          <div v-else class="text-center pa-4 text-body-small text-on-surface-variant">
-            {{ t('saves.noBackups') }}
-          </div>
-        </v-card-text>
-      </v-card>
-    </template>
   </div>
 </template>
 

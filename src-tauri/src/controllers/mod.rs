@@ -27,6 +27,7 @@ pub mod frontend_log_controller;
 pub mod instance_controller;
 pub mod java_controller;
 pub mod loader_controller;
+pub mod logs_controller;
 pub mod mod_controller;
 pub mod modpack_controller;
 pub mod resourcepack_controller;

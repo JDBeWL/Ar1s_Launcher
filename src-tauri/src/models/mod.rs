@@ -385,10 +385,15 @@ pub struct InstanceInfo {
 }
 
 pub mod instance_settings;
+pub mod logs;
 pub mod modpack;
 pub mod saves;
 
 pub use instance_settings::InstanceSettings;
+pub use logs::{
+    ContentTarget, CrashReportInfo, CrashReportText, LaunchOutcome, LaunchRecord, LogTail,
+    LAUNCH_HISTORY_LIMIT,
+};
 pub use saves::{SaveBackupInfo, SaveBackupKind, SaveImportSummary, SaveInfo};
 
 #[cfg(test)]

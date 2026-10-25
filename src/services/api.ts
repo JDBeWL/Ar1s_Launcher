@@ -29,6 +29,11 @@ import type {
   SaveInfo,
   SaveBackupInfo,
   SaveImportSummary,
+  ContentTarget,
+  CrashReportInfo,
+  CrashReportText,
+  LaunchRecord,
+  LogTail,
   ProxySettings,
   ProxyTestResult,
   ResourcePackInfo,
@@ -367,6 +372,32 @@ export const saveApi = {
 
   async openSavesFolder(instanceName: string): Promise<void> {
     await invokeCommand('open_saves_folder', { instanceName });
+  },
+};
+
+export const logApi = {
+  async getHistory(instanceName: string): Promise<LaunchRecord[]> {
+    return invokeCommand<LaunchRecord[]>('get_launch_history', { instanceName });
+  },
+
+  async getLatestLog(instanceName: string): Promise<LogTail> {
+    return invokeCommand<LogTail>('get_latest_log', { instanceName });
+  },
+
+  async getLaunchLog(instanceName: string, launchId: number): Promise<LogTail> {
+    return invokeCommand<LogTail>('get_launch_log', { instanceName, launchId });
+  },
+
+  async getCrashReports(instanceName: string): Promise<CrashReportInfo[]> {
+    return invokeCommand<CrashReportInfo[]>('get_crash_reports', { instanceName });
+  },
+
+  async getCrashReport(instanceName: string, fileName: string): Promise<CrashReportText> {
+    return invokeCommand<CrashReportText>('get_crash_report', { instanceName, fileName });
+  },
+
+  async openContent(instanceName: string, target: ContentTarget): Promise<void> {
+    await invokeCommand('open_instance_content', { instanceName, target });
   },
 };
 
@@ -792,6 +823,7 @@ export const api = {
   java: javaApi,
   config: configApi,
   save: saveApi,
+  log: logApi,
   user: userApi,
   modpack: modpackApi,
   mod: modApi,
