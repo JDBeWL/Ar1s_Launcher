@@ -1,6 +1,6 @@
 [package]
 name = "ar1s_launcher"
-version = "0.9.6"
+version = "0.9.7"
 description = "Ar1s Launcher"
 authors = ["JDBeWL"]
 edition = "2024"
@@ -17,7 +17,7 @@ tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
 uuid = { version = "1.28", features = ["v3"] }
-tauri = { version = "2.12", features = [] }
+tauri = { version = "2.12", features = ["protocol-asset"] }
 tauri-plugin-opener = "2.7"
 tauri-plugin-dialog = "2.8"
 reqwest = { version = "0.13", features = ["json", "form", "query", "socks"] }
@@ -28,6 +28,7 @@ sha2 = "0.11"
 base64 = "0.23"
 fastnbt = "2.6"
 flate2 = "1.1"
+png = "0.18"
 serde_urlencoded = "0.7"
 rand = "0.10"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
@@ -42,7 +43,12 @@ opener = "0.9"
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.60", features = [
+    "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_Graphics_Gdi",
+] }
 
 [dev-dependencies]
 [profile.dev]

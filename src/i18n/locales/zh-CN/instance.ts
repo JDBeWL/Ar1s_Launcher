@@ -51,6 +51,7 @@ export default {
     tabResourcePacks: '资源包',
     tabShaderPacks: '光影',
     tabSaves: '存档',
+    tabScreenshots: '截图',
     tabLogs: '日志',
     instanceInfo: '实例信息',
     minecraftVersion: 'Minecraft 版本',

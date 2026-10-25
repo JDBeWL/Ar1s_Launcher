@@ -388,13 +388,15 @@ pub mod instance_settings;
 pub mod logs;
 pub mod modpack;
 pub mod saves;
+pub mod screenshots;
 
 pub use instance_settings::InstanceSettings;
 pub use logs::{
-    ContentTarget, CrashReportInfo, CrashReportText, LaunchOutcome, LaunchRecord, LogTail,
-    LAUNCH_HISTORY_LIMIT,
+    ContentTarget, CrashReportInfo, CrashReportText, LAUNCH_HISTORY_LIMIT, LaunchOutcome,
+    LaunchRecord, LogTail,
 };
 pub use saves::{SaveBackupInfo, SaveBackupKind, SaveImportSummary, SaveInfo};
+pub use screenshots::ScreenshotInfo;
 
 #[cfg(test)]
 mod tests {

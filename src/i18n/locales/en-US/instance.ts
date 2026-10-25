@@ -51,6 +51,7 @@ export default {
     tabResourcePacks: 'Resource packs',
     tabShaderPacks: 'Shaders',
     tabSaves: 'Saves',
+    tabScreenshots: 'Screenshots',
     tabLogs: 'Logs',
     instanceInfo: 'Instance info',
     minecraftVersion: 'Minecraft version',

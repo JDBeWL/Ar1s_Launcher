@@ -11,6 +11,7 @@ export {
   configApi,
   saveApi,
   logApi,
+  screenshotApi,
   userApi,
   modpackApi,
   modApi,

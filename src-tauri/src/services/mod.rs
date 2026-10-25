@@ -26,5 +26,6 @@ pub mod proxy;
 pub mod resourcepack;
 pub mod resourcepack_installer;
 pub mod saves;
+pub mod screenshots;
 pub mod shaderpack;
 pub mod shaderpack_installer;

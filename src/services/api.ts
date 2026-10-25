@@ -34,6 +34,7 @@ import type {
   CrashReportText,
   LaunchRecord,
   LogTail,
+  ScreenshotInfo,
   ProxySettings,
   ProxyTestResult,
   ResourcePackInfo,
@@ -398,6 +399,20 @@ export const logApi = {
 
   async openContent(instanceName: string, target: ContentTarget): Promise<void> {
     await invokeCommand('open_instance_content', { instanceName, target });
+  },
+};
+
+export const screenshotApi = {
+  async getScreenshots(instanceName: string): Promise<ScreenshotInfo[]> {
+    return invokeCommand<ScreenshotInfo[]>('get_instance_screenshots', { instanceName });
+  },
+
+  async copyScreenshot(instanceName: string, fileName: string): Promise<void> {
+    await invokeCommand('copy_instance_screenshot', { instanceName, fileName });
+  },
+
+  async openFolder(instanceName: string): Promise<void> {
+    await invokeCommand('open_screenshots_folder', { instanceName });
   },
 };
 
@@ -824,6 +839,7 @@ export const api = {
   config: configApi,
   save: saveApi,
   log: logApi,
+  screenshot: screenshotApi,
   user: userApi,
   modpack: modpackApi,
   mod: modApi,

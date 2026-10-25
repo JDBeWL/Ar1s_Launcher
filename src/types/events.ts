@@ -520,6 +520,15 @@ export interface CrashReportText {
 
 export type ContentTarget = 'latestLog' | 'logsFolder' | 'crashReportsFolder';
 
+export interface ScreenshotInfo {
+  fileName: string;
+  path: string;
+  capturedAt: number;
+  size: number;
+  width: number;
+  height: number;
+}
+
 /** 对应后端 crash_diagnosis，camelCase */
 export type CrashConfidence = 'high' | 'medium';
 

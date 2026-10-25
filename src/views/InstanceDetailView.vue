@@ -12,6 +12,7 @@ import LogsPanel from '../components/instance/LogsPanel.vue';
 import ModsPanel from '../components/instance/ModsPanel.vue';
 import ResourcePacksPanel from '../components/instance/ResourcePacksPanel.vue';
 import SavesPanel from '../components/instance/SavesPanel.vue';
+import ScreenshotsPanel from '../components/instance/ScreenshotsPanel.vue';
 import ShaderPacksPanel from '../components/instance/ShaderPacksPanel.vue';
 import ExportModpackDialog from '../components/instance/ExportModpackDialog.vue';
 import { useNotificationStore } from '../stores/notificationStore';
@@ -28,7 +29,7 @@ const notificationStore = useNotificationStore();
 const { launchInstance: startInstance } = useGameLaunch();
 const { t } = useI18n();
 
-const tab = ref<'mods' | 'settings' | 'resourcepacks' | 'shaderpacks' | 'saves' | 'logs'>('settings');
+const tab = ref<'mods' | 'settings' | 'resourcepacks' | 'shaderpacks' | 'saves' | 'screenshots' | 'logs'>('settings');
 
 const instanceName = computed(() => String(route.params.name ?? ''));
 
@@ -178,6 +179,10 @@ onMounted(() => {
           <v-icon start size="18">mdi-content-save-outline</v-icon>
           {{ t('instanceDetail.tabSaves') }}
         </v-tab>
+        <v-tab value="screenshots">
+          <v-icon start size="18">mdi-monitor</v-icon>
+          {{ t('instanceDetail.tabScreenshots') }}
+        </v-tab>
         <v-tab value="logs">
           <v-icon start size="18">mdi-text-box-search-outline</v-icon>
           {{ t('instanceDetail.tabLogs') }}
@@ -261,6 +266,10 @@ onMounted(() => {
 
         <v-window-item value="saves">
           <SavesPanel :instance-name="instance.name" />
+        </v-window-item>
+
+        <v-window-item value="screenshots">
+          <ScreenshotsPanel :instance-name="instance.name" />
         </v-window-item>
 
         <v-window-item value="logs">
