@@ -39,6 +39,7 @@ const updates = ref<ModUpdate[]>([]);
 const checking = ref(false);
 const updatingFile = ref<string | null>(null);
 const updatingAll = ref(false);
+const query = ref<string | null>('');
 // 关闭版本隔离时模组在共享目录里，启停/删除会影响所有实例
 const versionIsolation = ref(true);
 
@@ -53,6 +54,17 @@ const updateMap = computed(() => {
 });
 
 const updatableCount = computed(() => updates.value.length);
+
+// clearable 清空时 v-model 会变成 null
+const searchTerm = computed(() => (query.value ?? '').trim().toLowerCase());
+
+const filteredMods = computed(() => {
+  const term = searchTerm.value;
+  if (!term) return mods.value;
+  return mods.value.filter(
+    (mod) => mod.displayName.toLowerCase().includes(term) || mod.fileName.toLowerCase().includes(term),
+  );
+});
 
 async function loadMods() {
   // 快速切换实例时旧实例的慢响应后到会覆盖新列表，之后按旧文件名操作就会写错目录
@@ -257,6 +269,7 @@ watch(
     deleteDialog.value = false;
     modToDelete.value = null;
     browser.value = false;
+    query.value = '';
     error.value = '';
     void loadMods();
   },
@@ -285,6 +298,15 @@ watch(
       >
         {{ t('mods.updateAll', { count: updatableCount }) }}
       </v-btn>
+      <v-text-field
+        v-model="query"
+        density="compact"
+        hide-details
+        clearable
+        :placeholder="t('mods.searchPlaceholder')"
+        prepend-inner-icon="mdi-magnify"
+        style="max-width: 280px"
+      />
       <v-btn icon size="small" variant="text" :aria-label="t('mods.refreshList')" :loading="loading" @click="loadMods">
         <v-icon size="18">mdi-refresh</v-icon>
       </v-btn>
@@ -306,8 +328,17 @@ watch(
         <div class="text-body-small mt-1">{{ t('mods.emptyHint') }}</div>
       </div>
 
+      <div v-else-if="filteredMods.length === 0" class="text-center pa-10 text-on-surface-variant">
+        <v-icon size="40" class="mb-2" color="on-surface-variant">mdi-magnify</v-icon>
+        <div class="text-body-medium">{{ t('mods.noMatchTitle') }}</div>
+        <div class="text-body-small mt-1">{{ t('mods.noMatchHint') }}</div>
+        <v-btn class="mt-4" size="small" variant="tonal" color="primary" @click="query = ''">
+          {{ t('mods.clearSearch') }}
+        </v-btn>
+      </div>
+
       <v-list v-else lines="two" density="compact" bg-color="transparent">
-        <v-list-item v-for="mod in mods" :key="mod.fileName">
+        <v-list-item v-for="mod in filteredMods" :key="mod.fileName">
           <template #prepend>
             <v-icon size="20" color="on-surface-variant">mdi-puzzle-outline</v-icon>
           </template>
@@ -369,6 +400,10 @@ watch(
 
       <v-divider v-if="mods.length > 0" />
       <div v-if="mods.length > 0" class="text-body-small text-on-surface-variant pa-3">
+        <template v-if="searchTerm">
+          {{ t('mods.matchCount', { matched: filteredMods.length, total: mods.length }) }}
+          <span class="mx-1">·</span>
+        </template>
         {{ versionIsolation ? t('mods.disableHint') : t('mods.sharedFolderHint') }}
       </div>
     </v-card>

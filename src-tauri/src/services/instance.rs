@@ -1056,6 +1056,7 @@ fn read_mod_metadata_uncached(path: &Path) -> ModMetadata {
         Err(_) => return (None, None),
     };
 
+    let mut best: Option<(u8, ModMetadata)> = None;
     for i in 0..archive.len() {
         let mut entry = match archive.by_index(i) {
             Ok(e) => e,
@@ -1065,37 +1066,66 @@ fn read_mod_metadata_uncached(path: &Path) -> ModMetadata {
             Ok(n) => n.to_ascii_lowercase(),
             Err(_) => continue,
         };
-        if name != "fabric.mod.json" && name != "quilt.mod.json" && !name.ends_with("mods.toml") {
+        let Some(priority) = mod_metadata_priority(&name) else {
             continue;
-        }
+        };
 
         let mut text = String::new();
         if std::io::Read::read_to_string(&mut entry, &mut text).is_err() {
             continue;
         }
 
-        if name.ends_with(".json") {
-            if let Ok(json) = serde_json::from_str::<Value>(&text) {
-                // quilt.mod.json 把字段嵌在 quilt_metadata.mod_metadata 下
-                let meta = json
-                    .get("quilt_metadata")
-                    .and_then(|m| m.get("mod_metadata"))
-                    .unwrap_or(&json);
-                let display_name = meta.get("name").and_then(Value::as_str).map(str::to_string);
-                let version = meta
-                    .get("version")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                if display_name.is_some() {
-                    return (display_name, version);
-                }
-            }
-        } else if let Some(display_name) = parse_mods_toml_name(&text) {
-            return (Some(display_name), None);
+        let parsed = parse_mod_metadata_file(&name, &text);
+        if parsed.0.is_some() && best.as_ref().is_none_or(|(p, _)| priority < *p) {
+            best = Some((priority, parsed));
         }
     }
 
-    (None, None)
+    best.map(|(_, meta)| meta).unwrap_or((None, None))
+}
+
+/// NeoForge 1.21+ 只读 neoforge.mods.toml；同包残留的 META-INF/mods.toml
+/// 可能是没跑资源处理的 Forge 模板
+fn mod_metadata_priority(name: &str) -> Option<u8> {
+    if name.ends_with("neoforge.mods.toml") {
+        Some(0)
+    } else if name == "fabric.mod.json" || name == "quilt.mod.json" {
+        Some(1)
+    } else if name.ends_with("mods.toml") {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+fn parse_mod_metadata_file(name: &str, text: &str) -> ModMetadata {
+    if name.ends_with(".json") {
+        let Ok(json) = serde_json::from_str::<Value>(text) else {
+            return (None, None);
+        };
+        // quilt.mod.json 把字段嵌在 quilt_metadata.mod_metadata 下
+        let meta = json
+            .get("quilt_metadata")
+            .and_then(|m| m.get("mod_metadata"))
+            .unwrap_or(&json);
+        let display_name = meta
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|value| !is_unresolved_placeholder(value))
+            .map(str::to_string);
+        let version = meta
+            .get("version")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        (display_name, version)
+    } else {
+        (parse_mods_toml_name(text), None)
+    }
+}
+
+/// Gradle 没跑 processResources 时，值会保留成 `${mod_name}` 这类模板
+fn is_unresolved_placeholder(value: &str) -> bool {
+    value.contains("${")
 }
 
 /// 取 mods.toml 里第一条 displayName，缺省退化到 modId
@@ -1138,11 +1168,9 @@ fn parse_mods_toml_name(text: &str) -> Option<String> {
             };
             if key == "displayName" {
                 let value = body.lines().next().unwrap_or_default().trim();
-                return if value.is_empty() {
-                    None
-                } else {
-                    Some(value.to_string())
-                };
+                if !value.is_empty() && !is_unresolved_placeholder(value) {
+                    return Some(value.to_string());
+                }
             }
             continue;
         }
@@ -1151,8 +1179,14 @@ fn parse_mods_toml_name(text: &str) -> Option<String> {
             continue;
         };
         match key {
-            "displayName" => return Some(value),
-            "modId" if mod_id.is_none() => mod_id = Some(value),
+            "displayName" => {
+                if !is_unresolved_placeholder(&value) {
+                    return Some(value);
+                }
+            }
+            "modId" if mod_id.is_none() && !is_unresolved_placeholder(&value) => {
+                mod_id = Some(value);
+            }
             _ => {}
         }
     }
@@ -1674,8 +1708,12 @@ fn merge_forge_instance_json(
 
 #[cfg(test)]
 mod tests {
-    use super::{get_instances_sync, lock_dir, parse_mods_toml_name, prune_stale_run_locks};
+    use super::{
+        get_instances_sync, lock_dir, parse_mods_toml_name, prune_stale_run_locks,
+        read_mod_metadata,
+    };
     use std::fs;
+    use std::io::Write;
 
     /// 锁必须放在实例目录之外，否则 Windows 上目录内有打开的文件就无法重命名/删除实例
     #[test]
@@ -1884,5 +1922,61 @@ mod tests {
     fn test_mods_toml_name_skips_commented_out_display_name() {
         let text = "[[mods]]\nmodId=\"examplemod\"\n#displayName=\"Bogus\" #optional\n";
         assert_eq!(parse_mods_toml_name(text).as_deref(), Some("examplemod"));
+    }
+
+    /// 未跑资源处理的构建会把 `${mod_name}` 原样打进 jar，不能拿来当展示名
+    #[test]
+    fn test_mods_toml_name_skips_unresolved_placeholders() {
+        let text = "modId=\"compactmekanismmachines\"\nversion=\"${mod_version}\"\ndisplayName=\"${mod_name}\"\n";
+        assert_eq!(
+            parse_mods_toml_name(text).as_deref(),
+            Some("compactmekanismmachines")
+        );
+
+        let text = "modId=\"${mod_id}\"\ndisplayName=\"${mod_name}\"\n";
+        assert_eq!(parse_mods_toml_name(text), None);
+    }
+
+    fn write_metadata_jar(path: &std::path::Path, forge: &str, neoforge: Option<&str>) {
+        let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("META-INF/mods.toml", options).unwrap();
+        zip.write_all(forge.as_bytes()).unwrap();
+        if let Some(neoforge) = neoforge {
+            zip.start_file("META-INF/neoforge.mods.toml", options)
+                .unwrap();
+            zip.write_all(neoforge.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    /// NeoForge 只读 neoforge.mods.toml；同包残留的 Forge 模板不应抢先
+    #[test]
+    fn test_mod_metadata_prefers_neoforge_manifest() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("mod.jar");
+        write_metadata_jar(
+            &path,
+            "modId=\"compactmekanismmachines\"\ndisplayName=\"${mod_name}\"\n",
+            Some("modId=\"compactmekanismmachines\"\ndisplayName=\"Compact Mekanism Machines\"\n"),
+        );
+
+        assert_eq!(
+            read_mod_metadata(&path).0.as_deref(),
+            Some("Compact Mekanism Machines")
+        );
+    }
+
+    #[test]
+    fn test_mod_metadata_ignores_placeholder_only_metadata() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("mod.jar");
+        write_metadata_jar(
+            &path,
+            "modId=\"${mod_id}\"\ndisplayName=\"${mod_name}\"\n",
+            None,
+        );
+
+        assert_eq!(read_mod_metadata(&path), (None, None));
     }
 }
