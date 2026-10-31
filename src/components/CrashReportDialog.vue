@@ -154,13 +154,17 @@ async function relaunch() {
         <v-btn variant="text" @click="crash.close()">{{ t('crash.close') }}</v-btn>
         <v-btn
           v-if="diagnosis.suggestedJava"
-          color="primary"
+          :color="diagnosis.suggestedJava.belowRequirement ? 'warning' : 'primary'"
           variant="flat"
           prepend-icon="mdi-restart"
           :loading="relaunching"
           @click="relaunch"
         >
-          {{ t('crash.relaunchWithJava', { version: diagnosis.suggestedJava.version }) }}
+          {{
+            diagnosis.suggestedJava.belowRequirement
+              ? t('crash.relaunchWithJavaBelow', { version: diagnosis.suggestedJava.version })
+              : t('crash.relaunchWithJava', { version: diagnosis.suggestedJava.version })
+          }}
         </v-btn>
       </v-card-actions>
     </v-card>

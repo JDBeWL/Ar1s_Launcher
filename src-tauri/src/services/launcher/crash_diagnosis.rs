@@ -98,6 +98,8 @@ pub struct ContextLine {
 pub struct SuggestedJava {
     pub path: String,
     pub version: u32,
+    /// true 表示低于判据下限；只在 Java 太新导致的崩溃里给，仅作尝试
+    pub below_requirement: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -166,6 +166,8 @@ pub async fn launch_minecraft(
     .await?;
     let config = (*load_config()?).clone();
     let effective = overrides::resolve_overrides(&config, &options);
+    // 实例设置或本次临时指定的 Java 是用户的明确选择，后续闸门不能再替他换掉
+    let explicit_java = effective.java_path.is_some();
 
     let game_dir = java::resolve_game_dir(&config.game_dir);
     let version_dir = file_utils::version_dir(&game_dir.join("versions"), &options.version)?;
@@ -422,55 +424,71 @@ pub async fn launch_minecraft(
             .await
             .map_err(|e| LauncherError::Custom(format!("Java 版本探测任务异常终止: {}", e)))?;
 
-    // 三条分支选出来的 Java 都要过同一道判据；版本 JSON 读不到时不硬拦
+    // 三条分支选出来的 Java 都要过同一道判据；版本 JSON 读不到时不硬拦。
+    // 显式指定的 Java 只警告不自动换：用户知道这份能跑，闸门替他换掉等于设置没生效
     if profile.resolved
         && let Some(ver) = java_version
         && !java_requirement::java_allowed(&profile.requirement, ver)
     {
-        let config_for_candidates = config.clone();
-        let candidates =
-            tokio::task::spawn_blocking(move || java::collect_candidates(&config_for_candidates))
-                .await
-                .map_err(|e| LauncherError::Custom(format!("Java 候选扫描任务异常终止: {}", e)))?;
+        if explicit_java {
+            let text = format!(
+                "实例指定 Java {} 不在判据允许区间（要求 Java {}{}），按你的选择继续启动；若启动失败，请更换 Java 或取消实例级固定",
+                ver,
+                profile.requirement.min,
+                match profile.requirement.hard_max {
+                    Some(max) => format!("~{}", max),
+                    None => "+".to_string(),
+                }
+            );
+            log::warn!("{}", text);
+            emit("log-warning", text);
+        } else {
+            let config_for_candidates = config.clone();
+            let candidates = tokio::task::spawn_blocking(move || {
+                java::collect_candidates(&config_for_candidates)
+            })
+            .await
+            .map_err(|e| LauncherError::Custom(format!("Java 候选扫描任务异常终止: {}", e)))?;
 
-        match java::resolve_gate(
-            &profile,
-            (java_path.as_str(), ver),
-            options.force_java_mismatch,
-            &candidates,
-        ) {
-            // 用户已经在弹窗里点过“仍用当前 Java”：这里再替他换一份，等于那个选项没生效
-            java::JavaGate::KeepCurrent(report) => {
-                emit(
-                    "log-warning",
-                    format!(
-                        "按你的选择继续用 Java {} 启动（{}），风险自负：\n{}",
-                        ver, java_path, report
-                    ),
-                );
-            }
-            java::JavaGate::SwitchTo(better) => {
-                emit(
-                    "log-warning",
-                    format!(
-                        "{} 实例要求 Java {}{}，当前 Java {} 不满足，已换成 Java {} ({})",
-                        profile.loader.label(),
-                        profile.requirement.min,
-                        match profile.requirement.hard_max {
-                            Some(max) => format!("~{}", max),
-                            None => "+".to_string(),
-                        },
-                        ver,
-                        better.version,
-                        better.path
-                    ),
-                );
-                java_path = better.path;
-                java_version = Some(better.version);
-            }
-            java::JavaGate::Refuse(report) => {
-                emit("log-error", report.clone());
-                return Err(LauncherError::Custom(report));
+            match java::resolve_gate(
+                &profile,
+                (java_path.as_str(), ver),
+                options.force_java_mismatch,
+                &candidates,
+            ) {
+                // 用户已经在弹窗里点过“仍用当前 Java”：这里再替他换一份，等于那个选项没生效
+                java::JavaGate::KeepCurrent(report) => {
+                    emit(
+                        "log-warning",
+                        format!(
+                            "按你的选择继续用 Java {} 启动（{}），风险自负：\n{}",
+                            ver, java_path, report
+                        ),
+                    );
+                }
+                java::JavaGate::SwitchTo(better) => {
+                    emit(
+                        "log-warning",
+                        format!(
+                            "{} 实例要求 Java {}{}，当前 Java {} 不满足，已换成 Java {} ({})",
+                            profile.loader.label(),
+                            profile.requirement.min,
+                            match profile.requirement.hard_max {
+                                Some(max) => format!("~{}", max),
+                                None => "+".to_string(),
+                            },
+                            ver,
+                            better.version,
+                            better.path
+                        ),
+                    );
+                    java_path = better.path;
+                    java_version = Some(better.version);
+                }
+                java::JavaGate::Refuse(report) => {
+                    emit("log-error", report.clone());
+                    return Err(LauncherError::Custom(report));
+                }
             }
         }
     }

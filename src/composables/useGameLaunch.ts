@@ -92,6 +92,16 @@ export function useGameLaunch() {
       variant: 'outlined',
     });
 
+    // 用户已经确认这份 Java 能跑时，一次写进实例设置，后续不再反复弹窗
+    if (result.currentJavaPath && result.currentJavaVersion != null) {
+      options.push({
+        id: 'fixed',
+        label: translate('launch.fixCurrentJava', { version: result.currentJavaVersion }),
+        color: 'info',
+        variant: 'tonal',
+      });
+    }
+
     // 能走到这个弹窗就说明当前 Java 不满足判据，选“继续”必须把 force 传下去：
     // 否则后端会自己挑一份更合适的，用户的选择等于没生效
     options.push({
@@ -112,6 +122,26 @@ export function useGameLaunch() {
 
     if (selected === 'temp' && result.recommendedJavaPath) {
       return { shouldLaunch: true, overrideJavaPath: result.recommendedJavaPath };
+    }
+
+    if (selected === 'fixed' && result.currentJavaPath) {
+      try {
+        const settings = await instanceApi.getInstanceSettings(instanceName);
+        await instanceApi.setInstanceSettings(instanceName, {
+          ...settings,
+          javaPath: result.currentJavaPath,
+        });
+        notificationStore.success(
+          translate('launch.javaFixedTitle'),
+          translate('launch.javaFixedHint', { name: instanceName }),
+        );
+        // 实例设置已保存，后续启动不会再被闸门替换；本次仍带上 force 确保立即生效
+        return { shouldLaunch: true, forceJavaMismatch: true };
+      } catch (err) {
+        logError('Failed to fix Java for instance', err, 'useGameLaunch');
+        notificationStore.error(translate('launch.javaFixedFailed'), getErrorMessage(err), true);
+        return { shouldLaunch: false };
+      }
     }
 
     if (selected === 'auto') {

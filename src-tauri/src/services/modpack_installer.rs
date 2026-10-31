@@ -7,7 +7,7 @@ use crate::errors::LauncherError;
 use crate::models::DownloadJob;
 use crate::models::modpack::*;
 use crate::services::cf_modpack_format::{self, CfManifest};
-use crate::services::curseforge::{CfManualFile, CfResource, CfResolvedFile, CurseForgeService};
+use crate::services::curseforge::{CfManualFile, CfResolvedFile, CfResource, CurseForgeService};
 use crate::services::launcher::isolation;
 use crate::services::modpack_format::{
     self, ModrinthDependencies, ModrinthIndex, ModrinthIndexFile,
@@ -289,9 +289,7 @@ impl ModpackInstaller {
         ensure_instance_free(&targets, &options.instance_name)?;
 
         let result = async {
-            let (plan, manual) = self
-                .prepare_cf_plan(&options, &targets, window)
-                .await?;
+            let (plan, manual) = self.prepare_cf_plan(&options, &targets, window).await?;
             let outcome = self
                 .install_plan(&plan, &options.instance_name, &targets, window)
                 .await;
@@ -336,11 +334,8 @@ impl ModpackInstaller {
             let file_stem = file_stem_of(&archive_path);
             match detect_local_archive_kind(&archive_path).await? {
                 LocalArchiveKind::CurseForge => {
-                    let manifest =
-                        read_archive_manifest(&archive_path).await?;
-                    let (index, manual) = self
-                        .build_cf_index(&manifest, window, 30, 45)
-                        .await?;
+                    let manifest = read_archive_manifest(&archive_path).await?;
+                    let (index, manual) = self.build_cf_index(&manifest, window, 30, 45).await?;
                     let deps = index.dependencies.clone();
                     let plan = ModpackPlan {
                         display_name: trimmed_or(&manifest.name, &file_stem),
@@ -398,55 +393,63 @@ impl ModpackInstaller {
         tokio::task::spawn_blocking(move || -> Result<LocalModpackPreview, LauncherError> {
             let stem = file_stem_of(&archive_path);
 
-            let (name, version_id, summary, minecraft, loader, loader_version, file_count, total_size) =
-                match detect_local_archive_kind_sync(&archive_path)? {
-                    LocalArchiveKind::CurseForge => {
-                        let manifest = cf_modpack_format::read_manifest_from_archive(&archive_path)?;
-                        let deps = manifest.to_dependencies();
-                        let loader = deps.loader();
-                        (
-                            trimmed_or(&manifest.name, &stem),
-                            trimmed_or(&manifest.version, "1.0.0"),
-                            None,
-                            deps.minecraft.clone(),
-                            deps.loader_slug().map(str::to_string),
-                            loader.as_ref().map(|l| l.loader_version().to_string()),
-                            // CF 清单不带文件体积，装进实例前要在线解析才知道，预览阶段只能给个数
-                            manifest.client_file_refs().len(),
-                            0u64,
-                        )
-                    }
-                    LocalArchiveKind::Modrinth => {
-                        let index = modpack_format::read_index_from_archive(&archive_path)?;
-                        let client_files: Vec<&ModrinthIndexFile> = index
-                            .files
-                            .iter()
-                            .filter(|file| modpack_format::is_client_file(file))
-                            .collect();
-                        let total_size = client_files
-                            .iter()
-                            .map(|file| file.file_size.unwrap_or(0))
-                            .sum();
-                        let loader = index.dependencies.loader();
-                        (
-                            trimmed_or(&index.name, &stem),
-                            trimmed_or(&index.version_id, "1.0.0"),
-                            index
-                                .summary
-                                .as_deref()
-                                .map(str::trim)
-                                .filter(|text| !text.is_empty())
-                                .map(str::to_string),
-                            index.dependencies.minecraft.clone(),
-                            index.dependencies.loader_slug().map(str::to_string),
-                            loader
-                                .as_ref()
-                                .map(|loaded| loaded.loader_version().to_string()),
-                            client_files.len(),
-                            total_size,
-                        )
-                    }
-                };
+            let (
+                name,
+                version_id,
+                summary,
+                minecraft,
+                loader,
+                loader_version,
+                file_count,
+                total_size,
+            ) = match detect_local_archive_kind_sync(&archive_path)? {
+                LocalArchiveKind::CurseForge => {
+                    let manifest = cf_modpack_format::read_manifest_from_archive(&archive_path)?;
+                    let deps = manifest.to_dependencies();
+                    let loader = deps.loader();
+                    (
+                        trimmed_or(&manifest.name, &stem),
+                        trimmed_or(&manifest.version, "1.0.0"),
+                        None,
+                        deps.minecraft.clone(),
+                        deps.loader_slug().map(str::to_string),
+                        loader.as_ref().map(|l| l.loader_version().to_string()),
+                        // CF 清单不带文件体积，装进实例前要在线解析才知道，预览阶段只能给个数
+                        manifest.client_file_refs().len(),
+                        0u64,
+                    )
+                }
+                LocalArchiveKind::Modrinth => {
+                    let index = modpack_format::read_index_from_archive(&archive_path)?;
+                    let client_files: Vec<&ModrinthIndexFile> = index
+                        .files
+                        .iter()
+                        .filter(|file| modpack_format::is_client_file(file))
+                        .collect();
+                    let total_size = client_files
+                        .iter()
+                        .map(|file| file.file_size.unwrap_or(0))
+                        .sum();
+                    let loader = index.dependencies.loader();
+                    (
+                        trimmed_or(&index.name, &stem),
+                        trimmed_or(&index.version_id, "1.0.0"),
+                        index
+                            .summary
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|text| !text.is_empty())
+                            .map(str::to_string),
+                        index.dependencies.minecraft.clone(),
+                        index.dependencies.loader_slug().map(str::to_string),
+                        loader
+                            .as_ref()
+                            .map(|loaded| loaded.loader_version().to_string()),
+                        client_files.len(),
+                        total_size,
+                    )
+                }
+            };
 
             let suggested_instance_name = sanitize_instance_name(&name);
             Ok(LocalModpackPreview {

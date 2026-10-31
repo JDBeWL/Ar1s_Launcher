@@ -606,6 +606,48 @@ fn handle_process_exit(
     let _ = window.emit("minecraft-exited", message);
 }
 
+/// 只在「本次 Java 太新」的崩溃里才值得往更老的版本退
+fn suggests_lower_java(diagnosis: &crash_diagnosis::CrashDiagnosis) -> bool {
+    use crash_diagnosis::FindingKind;
+
+    let points_to_newer = diagnosis.findings.iter().any(|finding| {
+        matches!(
+            finding.kind,
+            FindingKind::JavaVersion
+                | FindingKind::ClassReaderTooOld
+                | FindingKind::SecurityManager
+        )
+    });
+    let points_to_older = diagnosis
+        .findings
+        .iter()
+        .any(|finding| finding.kind == FindingKind::ClassVersion);
+
+    points_to_newer && !points_to_older
+}
+
+/// 判据没有允许的候选时，退而求其次找一份低于下限的 Java；仅用于展示“尝试”按钮
+fn choose_lower_java<'a>(
+    req: &super::java_requirement::JavaRequirement,
+    candidates: &'a [super::java::JavaCandidate],
+    used: u32,
+) -> Option<&'a super::java::JavaCandidate> {
+    if used <= req.min {
+        return None;
+    }
+
+    candidates
+        .iter()
+        .filter(|candidate| candidate.version < req.min && candidate.version < used)
+        .min_by(|a, b| {
+            b.version
+                .cmp(&a.version)
+                .then_with(|| a.arch.rank().cmp(&b.arch.rank()))
+                .then_with(|| a.is_ea.cmp(&b.is_ea))
+                .then_with(|| a.path.cmp(&b.path))
+        })
+}
+
 /// 诊断点到 Java 时，顺手挑一份判据允许、且不是本次用的 Java。
 /// 弹窗靠它给出「换 Java 重试」，而不是只让用户自己去设置页翻
 fn attach_suggested_java(diagnosis: &mut crash_diagnosis::CrashDiagnosis, ctx: &LaunchContext) {
@@ -635,6 +677,26 @@ fn attach_suggested_java(diagnosis: &mut crash_diagnosis::CrashDiagnosis, ctx: &
         diagnosis.suggested_java = Some(crash_diagnosis::SuggestedJava {
             path: matched.path,
             version: matched.version,
+            below_requirement: false,
+        });
+        return;
+    }
+
+    // 判据里一份能用的都没有：Java 太新导致的崩溃可以往更老的版本试，
+    // 但要说清楚这是低于下限的尝试，不能伪装成“推荐”
+    if let Some(used) = ctx.used_java_version
+        && suggests_lower_java(diagnosis)
+        && let Some(fallback) = choose_lower_java(&profile.requirement, &candidates, used)
+    {
+        log::info!(
+            "崩溃指向 Java 过新，额外建议尝试低于判据下限的 Java {} ({})",
+            fallback.version,
+            fallback.path
+        );
+        diagnosis.suggested_java = Some(crash_diagnosis::SuggestedJava {
+            path: fallback.path.clone(),
+            version: fallback.version,
+            below_requirement: true,
         });
     }
 }
@@ -642,9 +704,11 @@ fn attach_suggested_java(diagnosis: &mut crash_diagnosis::CrashDiagnosis, ctx: &
 #[cfg(test)]
 mod tests {
     use super::{
-        OutputCapture, exit_message, find_hs_err_log, find_new_crash_report,
+        OutputCapture, choose_lower_java, exit_message, find_hs_err_log, find_new_crash_report,
         is_client_shutdown_watchdog, redacted_args, wait_for_process_holding_lock,
     };
+    use crate::services::launcher::java::{JavaArch, JavaCandidate};
+    use crate::services::launcher::java_requirement::JavaRequirement;
     use std::fs;
     use std::path::Path;
     use std::process::{Command, Stdio};
@@ -652,6 +716,60 @@ mod tests {
 
     fn args(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn cand(path: &str, version: u32, arch: JavaArch) -> JavaCandidate {
+        JavaCandidate {
+            path: path.to_string(),
+            version,
+            arch,
+            is_ea: false,
+            from_config: false,
+        }
+    }
+
+    fn req(min: u32, target: u32) -> JavaRequirement {
+        JavaRequirement {
+            target,
+            min,
+            hard_max: None,
+            reasons: Vec::new(),
+        }
+    }
+
+    /// 21 没装、只装了 17 和 25，崩溃后应该建议退到 17 而不是无解
+    #[test]
+    fn test_lower_java_fallback_picks_the_highest_below_floor() {
+        let candidates = vec![
+            cand("C:/jdk8/bin/java.exe", 8, JavaArch::Bits64),
+            cand("C:/jdk17/bin/java.exe", 17, JavaArch::Bits64),
+            cand("C:/jdk25/bin/java.exe", 25, JavaArch::Bits64),
+        ];
+
+        let chosen = choose_lower_java(&req(21, 21), &candidates, 25).unwrap();
+
+        assert_eq!(chosen.version, 17);
+    }
+
+    #[test]
+    fn test_lower_java_fallback_only_when_current_is_above_floor() {
+        let candidates = vec![cand("C:/jdk17/bin/java.exe", 17, JavaArch::Bits64)];
+
+        assert!(choose_lower_java(&req(21, 21), &candidates, 21).is_none());
+        assert!(choose_lower_java(&req(21, 21), &candidates, 17).is_none());
+        assert!(choose_lower_java(&req(21, 21), &candidates, 26).is_some());
+    }
+
+    #[test]
+    fn test_lower_java_fallback_prefers_64_bit() {
+        let candidates = vec![
+            cand("C:/jdk17-32/bin/java.exe", 17, JavaArch::Bits32),
+            cand("C:/jdk17-64/bin/java.exe", 17, JavaArch::Bits64),
+        ];
+
+        let chosen = choose_lower_java(&req(21, 21), &candidates, 25).unwrap();
+
+        assert!(chosen.path.contains("64"), "{}", chosen.path);
     }
 
     #[test]

@@ -377,7 +377,12 @@ impl CurseForgeService {
         resource: CfResource,
         project_id: &str,
     ) -> Result<(String, Option<String>), LauncherError> {
-        let url = format!("{}/{}/detail/{}", MINEKUAI_API_BASE, resource.path(), project_id);
+        let url = format!(
+            "{}/{}/detail/{}",
+            MINEKUAI_API_BASE,
+            resource.path(),
+            project_id
+        );
         match self.get_json(&url, &[]).await {
             Ok(body) => {
                 let title = body["title"]
@@ -477,9 +482,7 @@ impl CurseForgeService {
                 let body = cfwidget_get_json(&path).await?;
                 let id = body["id"]
                     .as_u64()
-                    .ok_or_else(|| {
-                        LauncherError::Custom("cfwidget 响应缺少项目 ID".to_string())
-                    })?
+                    .ok_or_else(|| LauncherError::Custom("cfwidget 响应缺少项目 ID".to_string()))?
                     .to_string();
                 let title = body["title"]
                     .as_str()
@@ -679,7 +682,10 @@ async fn fetch_cfwidget_files(
     }
     let project_page = body["urls"]["project"]
         .as_str()
-        .unwrap_or(&format!("https://www.curseforge.com/projects/{}", project_id))
+        .unwrap_or(&format!(
+            "https://www.curseforge.com/projects/{}",
+            project_id
+        ))
         .trim_end_matches('/')
         .to_string();
     Ok((files, project_page))
@@ -715,7 +721,7 @@ async fn cfwidget_get_json(path: &str) -> Result<Value, LauncherError> {
                 return Err(LauncherError::Custom(format!(
                     "cfwidget 返回 HTTP {}",
                     status
-                )))
+                )));
             }
         }
     }
@@ -955,7 +961,12 @@ mod tests {
             };
             // 桶初始是满的：前 3 个立即通过
             for i in 0..3 {
-                assert_eq!(bucket.next_wait(start, &mut cloned), Duration::ZERO, "第 {} 个应当立即通过", i + 1);
+                assert_eq!(
+                    bucket.next_wait(start, &mut cloned),
+                    Duration::ZERO,
+                    "第 {} 个应当立即通过",
+                    i + 1
+                );
             }
             cloned
         };
@@ -967,7 +978,12 @@ mod tests {
         // 过了 1 秒，令牌回满到容量 3，又能连续取 3 个
         let later = start + Duration::from_secs(1);
         for i in 0..3 {
-            assert_eq!(bucket.next_wait(later, &mut state), Duration::ZERO, "回满后第 {} 个应当立即通过", i + 1);
+            assert_eq!(
+                bucket.next_wait(later, &mut state),
+                Duration::ZERO,
+                "回满后第 {} 个应当立即通过",
+                i + 1
+            );
         }
     }
 
@@ -977,8 +993,14 @@ mod tests {
             cdn_file_url(4612979, "RLCraft 1.12.2 - Release v2.9.3.zip"),
             "https://mediafilez.forgecdn.net/files/4612/979/RLCraft%201.12.2%20-%20Release%20v2.9.3.zip"
         );
-        assert_eq!(percent_encode_path_segment("a+b(c).jar"), "a%2Bb%28c%29.jar");
-        assert_eq!(percent_encode_path_segment("jei-1.20.1.jar"), "jei-1.20.1.jar");
+        assert_eq!(
+            percent_encode_path_segment("a+b(c).jar"),
+            "a%2Bb%28c%29.jar"
+        );
+        assert_eq!(
+            percent_encode_path_segment("jei-1.20.1.jar"),
+            "jei-1.20.1.jar"
+        );
     }
 
     #[test]
@@ -1084,7 +1106,10 @@ mod tests {
         assert_eq!(version.loaders, vec!["neoforge".to_string()]);
         assert_eq!(version.game_versions, vec!["1.21.11".to_string()]);
         assert_eq!(version.files.len(), 1);
-        assert_eq!(version.files[0].filename, "jei-26.3-neoforge-31.14.0.72.jar");
+        assert_eq!(
+            version.files[0].filename,
+            "jei-26.3-neoforge-31.14.0.72.jar"
+        );
     }
 
     #[test]
@@ -1126,7 +1151,9 @@ mod tests {
             ProjectInput::Slug("new-age-science-and-technology".to_string())
         );
         assert_eq!(
-            super::parse_project_input("https://www.curseforge.com/minecraft/mc-mods/jei?tab=files"),
+            super::parse_project_input(
+                "https://www.curseforge.com/minecraft/mc-mods/jei?tab=files"
+            ),
             ProjectInput::Slug("jei".to_string())
         );
         // 末段是数字时识别为 ID；容忍结尾斜杠

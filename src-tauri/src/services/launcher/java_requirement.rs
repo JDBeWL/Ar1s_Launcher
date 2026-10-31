@@ -5,9 +5,12 @@
 
 use super::java::JavaCandidate;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+use std::time::SystemTime;
 
 /// 声明缺失时的兜底；Mojang 对每个版本都写了 javaVersion，正常不会走到
 pub const FALLBACK_JAVA: u32 = 8;
@@ -17,6 +20,12 @@ const INHERITS_DEPTH: u32 = 4;
 
 /// 一个 jar 里取样多少个 class 就够判断它的编译目标；整包全扫在大 mod 上是白费
 const CLASS_SAMPLE_LIMIT: usize = 32;
+
+/// 一个 Java 版本至少出现在这么多个类里才算数；单个高版本类多是可选分支或误打包
+const MIN_CLASSES_FOR_FLOOR: usize = 2;
+
+/// jar class 版本探测缓存上限；一个实例的模组远少于这个数
+const JAR_JAVA_CACHE_MAX: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoaderKind {
@@ -84,8 +93,33 @@ impl JavaRequirement {
 #[derive(Debug, Clone)]
 pub struct ModProbe {
     pub file: String,
+    /// 参与下限判定的版本：出现次数达到阈值的最高 Java
     pub java: u32,
+    /// 取样到的原始最高版本，可能比 `java` 高
+    pub highest: u32,
+    pub highest_count: usize,
+    pub sampled: usize,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JarJavaProfile {
+    /// 用于下限判定的版本：忽略只出现一两次的孤立高版本类
+    pub floor: u32,
+    pub highest: u32,
+    pub highest_count: usize,
+    pub sampled: usize,
+}
+
+struct CachedJarJava {
+    len: u64,
+    modified: Option<SystemTime>,
+    profile: JarJavaProfile,
+}
+
+/// jar 路径 -> 长度/修改时间与探测结果；启动前 `check_java_compatibility`
+/// 和真正启动会各扫一次，没有这层缓存时同一个 jar 要被打开两遍
+static JAR_JAVA_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedJarJava>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone)]
 pub struct InstanceProfile {
@@ -198,19 +232,15 @@ pub fn detect_loader(json: &Value, version_id: &str) -> LoaderKind {
     }
 }
 
-/// 读 jar 里 class 的最高主版本号（取样上限内）
-///
-/// 只看第一个 entry 会被 `module-info.class`、签名文件或字母序靠前的低版本类带偏；
-/// `META-INF/versions/` 是多版本 jar 的高版本实现，运行时不一定加载，跳过才不会误判
-pub fn jar_java_version(jar: &Path) -> Option<u32> {
+fn sample_class_versions(jar: &Path) -> Option<Vec<u32>> {
     let file = fs::File::open(jar).ok()?;
     let mut archive = zip::ZipArchive::new(file).ok()?;
 
-    let mut highest: Option<u32> = None;
-    let mut sampled = 0usize;
+    let mut versions = Vec::with_capacity(CLASS_SAMPLE_LIMIT);
+    let mut examined = 0usize;
 
     for i in 0..archive.len() {
-        if sampled >= CLASS_SAMPLE_LIMIT {
+        if examined >= CLASS_SAMPLE_LIMIT {
             break;
         }
 
@@ -224,7 +254,7 @@ pub fn jar_java_version(jar: &Path) -> Option<u32> {
         {
             continue;
         }
-        sampled += 1;
+        examined += 1;
 
         let mut head = [0u8; 8];
         if entry.read_exact(&mut head).is_err() {
@@ -235,11 +265,130 @@ pub fn jar_java_version(jar: &Path) -> Option<u32> {
         }
 
         if let Some(java) = class_file_to_java(u16::from_be_bytes([head[6], head[7]]) as u32) {
-            highest = Some(highest.map_or(java, |best| best.max(java)));
+            versions.push(java);
         }
     }
 
-    highest
+    (!versions.is_empty()).then_some(versions)
+}
+
+/// 读 jar 里 class 的最高主版本号（取样上限内）
+///
+/// 只看第一个 entry 会被 `module-info.class`、签名文件或字母序靠前的低版本类带偏；
+/// `META-INF/versions/` 是多版本 jar 的高版本实现，运行时不一定加载，跳过才不会误判
+pub fn jar_java_version(jar: &Path) -> Option<u32> {
+    sample_class_versions(jar)?.into_iter().max()
+}
+
+fn profile_from_versions(versions: &[u32]) -> JarJavaProfile {
+    let mut counts: HashMap<u32, usize> = HashMap::new();
+    for version in versions {
+        *counts.entry(*version).or_default() += 1;
+    }
+
+    let (&highest, &highest_count) = counts
+        .iter()
+        .max_by_key(|(version, count)| (**version, **count))
+        .expect("versions 非空");
+    let sampled = versions.len();
+
+    // 单个高版本类可能来自可选分支或误打包（例如 watervision 只有 1/23 个类是 21），
+    // 不能因此把整个实例的下限抬上去；样本太少时宁可保守取最高
+    let floor = if sampled <= 3 {
+        highest
+    } else {
+        counts
+            .iter()
+            .filter(|(_, count)| **count >= MIN_CLASSES_FOR_FLOOR)
+            .map(|(version, _)| *version)
+            .max()
+            .unwrap_or(highest)
+    };
+
+    JarJavaProfile {
+        floor,
+        highest,
+        highest_count,
+        sampled,
+    }
+}
+
+pub fn jar_java_profile(jar: &Path) -> Option<JarJavaProfile> {
+    Some(profile_from_versions(&sample_class_versions(jar)?))
+}
+
+fn cached_jar_java(path: &Path, len: u64, modified: Option<SystemTime>) -> Option<JarJavaProfile> {
+    if let Ok(cache) = JAR_JAVA_CACHE.lock()
+        && let Some(hit) = cache.get(path)
+        && hit.len == len
+        && hit.modified == modified
+    {
+        return Some(hit.profile.clone());
+    }
+
+    let profile = jar_java_profile(path)?;
+    if let Ok(mut cache) = JAR_JAVA_CACHE.lock() {
+        if cache.len() >= JAR_JAVA_CACHE_MAX && !cache.contains_key(path) {
+            cache.clear();
+        }
+        cache.insert(
+            path.to_path_buf(),
+            CachedJarJava {
+                len,
+                modified,
+                profile: profile.clone(),
+            },
+        );
+    }
+    Some(profile)
+}
+
+struct ModFile {
+    path: PathBuf,
+    name: String,
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+fn scan_mod_file(file: &ModFile) -> Option<ModProbe> {
+    let profile = cached_jar_java(&file.path, file.len, file.modified)?;
+    Some(ModProbe {
+        file: file.name.clone(),
+        java: profile.floor,
+        highest: profile.highest,
+        highest_count: profile.highest_count,
+        sampled: profile.sampled,
+    })
+}
+
+fn scan_mod_files(files: Vec<ModFile>) -> Vec<ModProbe> {
+    if files.is_empty() {
+        return Vec::new();
+    }
+
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(4)
+        .min(8)
+        .min(files.len());
+
+    if workers <= 1 {
+        return files.iter().filter_map(scan_mod_file).collect();
+    }
+
+    let chunk_size = files.len().div_ceil(workers);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = files
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || chunk.iter().filter_map(scan_mod_file).collect::<Vec<_>>())
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    })
 }
 
 /// 禁用中的 *.jar.disabled 不算
@@ -248,21 +397,28 @@ pub fn scan_mods(mods_dir: &Path) -> Vec<ModProbe> {
         return Vec::new();
     };
 
-    let mut probes = Vec::new();
+    let mut files = Vec::new();
     for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        if !name.ends_with(".jar") || name.ends_with(".jar.disabled") {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.to_lowercase().ends_with(".jar") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
             continue;
         }
 
-        if let Some(java) = jar_java_version(&entry.path()) {
-            probes.push(ModProbe {
-                file: entry.file_name().to_string_lossy().into_owned(),
-                java,
-            });
-        }
+        files.push(ModFile {
+            path: entry.path(),
+            name,
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        });
     }
 
+    let mut probes = scan_mod_files(files);
     probes.sort_by(|a, b| b.java.cmp(&a.java).then_with(|| a.file.cmp(&b.file)));
     probes
 }
@@ -272,7 +428,7 @@ pub fn build_requirement(
     loader: LoaderKind,
     mods: &[ModProbe],
 ) -> JavaRequirement {
-    build_requirement_with_fallback(declared, None, loader, None, mods)
+    build_requirement_with_measurements(declared, None, None, loader, None, mods)
 }
 
 /// `inferred` 是按 MC 版本号推出来的目标版本，只在 JSON 没有声明时生效；
@@ -280,6 +436,19 @@ pub fn build_requirement(
 pub fn build_requirement_with_fallback(
     declared: Option<u32>,
     inferred: Option<u32>,
+    loader: LoaderKind,
+    mc: Option<(u32, u32)>,
+    mods: &[ModProbe],
+) -> JavaRequirement {
+    build_requirement_with_measurements(declared, inferred, None, loader, mc, mods)
+}
+
+/// `client_java` 是实际客户端 jar 的 class 版本实测值；有它时下限跟实测走，
+/// 声明值只作为优先目标，避免 JSON 写 21、实际只需要 17 时被迫上 25
+pub fn build_requirement_with_measurements(
+    declared: Option<u32>,
+    inferred: Option<u32>,
+    client_java: Option<u32>,
     loader: LoaderKind,
     mc: Option<(u32, u32)>,
     mods: &[ModProbe],
@@ -297,6 +466,20 @@ pub fn build_requirement_with_fallback(
             "版本 JSON 没有 javaVersion 声明，按 Java {} 兜底",
             FALLBACK_JAVA
         )),
+    }
+
+    if let Some(java) = client_java {
+        reasons.push(format!(
+            "客户端 jar 实测要求 Java {}（class {}）",
+            java,
+            java + 44
+        ));
+        if java != target {
+            reasons.push(format!(
+                "声明值是 Java {}、实测是 Java {}，Java 下限按实测取",
+                target, java
+            ));
+        }
     }
 
     let hard_max = match loader_ceiling(loader, target, mc) {
@@ -324,15 +507,27 @@ pub fn build_requirement_with_fallback(
         }
     };
 
-    let mut min = target;
+    let mut min = client_java.unwrap_or(target);
     if let Some(highest) = mods.first()
         && highest.java > min
     {
         reasons.push(format!(
-            "模组 {} 由 Java {} 编译（class 主版本要求），下限抬到 {}",
+            "模组 {} 要求 Java {}（class 主版本），下限抬到 {}",
             highest.file, highest.java, highest.java
         ));
         min = highest.java;
+    }
+
+    // 孤立高版本类不计入下限，但要在报告里留痕，否则用户会疑惑“明明有 21 的类为什么用 17”
+    if let Some(outlier) = mods
+        .iter()
+        .filter(|probe| probe.highest > probe.java)
+        .max_by_key(|probe| probe.highest)
+    {
+        reasons.push(format!(
+            "模组 {} 的最高 class 为 Java {}，但取样 {} 个类中仅 {} 个，按孤立类忽略",
+            outlier.file, outlier.highest, outlier.sampled, outlier.highest_count
+        ));
     }
 
     JavaRequirement {
@@ -379,6 +574,62 @@ fn resolve_declaration(game_dir: &Path, version_id: &str) -> (Option<u32>, Strin
     (declared, current)
 }
 
+/// 沿继承链收集实际会作为客户端 jar 的文件；实例目录里可能有整包复制过来的 jar，
+/// 加载器实例则通常只有父版本那一份
+fn collect_client_jars(game_dir: &Path, version_id: &str) -> Vec<PathBuf> {
+    let versions_dir = game_dir.join("versions");
+    let mut jars = Vec::new();
+    let mut current = version_id.to_string();
+    let mut seen = std::collections::HashSet::new();
+
+    for _ in 0..=INHERITS_DEPTH {
+        if !seen.insert(current.clone()) {
+            break;
+        }
+
+        let Ok(dir) = crate::utils::file_utils::version_dir(&versions_dir, &current) else {
+            break;
+        };
+        let own = dir.join(format!("{}.jar", current));
+        if own.is_file() {
+            jars.push(own);
+        }
+
+        let Some(json) = read_version_json(game_dir, &current) else {
+            break;
+        };
+
+        if let Some(jar_id) = json["jar"].as_str()
+            && let Ok(jar_dir) = crate::utils::file_utils::version_dir(&versions_dir, jar_id)
+        {
+            let jar = jar_dir.join(format!("{}.jar", jar_id));
+            if jar.is_file() {
+                jars.push(jar);
+            }
+        }
+
+        match json["inheritsFrom"].as_str() {
+            Some(parent) => current = parent.to_string(),
+            None => break,
+        }
+    }
+
+    jars.sort();
+    jars.dedup();
+    jars
+}
+
+fn measure_client_java(game_dir: &Path, version_id: &str) -> Option<u32> {
+    collect_client_jars(game_dir, version_id)
+        .into_iter()
+        .filter_map(|jar| {
+            let metadata = fs::metadata(&jar).ok()?;
+            cached_jar_java(&jar, metadata.len(), metadata.modified().ok())
+                .map(|profile| profile.floor)
+        })
+        .max()
+}
+
 /// 模组目录跟着版本隔离走：开启时在实例目录，关闭时是共享的根目录。
 /// 判错会把共享目录的模组算进这个实例，Java 下限与模组清单因此指向没被加载的文件
 pub fn mods_dir(game_dir: &Path, version_id: &str, isolated: bool) -> PathBuf {
@@ -421,9 +672,17 @@ pub fn analyze(version_id: &str, game_dir: &Path) -> InstanceProfile {
         version_id,
         crate::services::config::is_version_isolated(),
     ));
+    let client_java = measure_client_java(game_dir, version_id);
 
     InstanceProfile {
-        requirement: build_requirement_with_fallback(declared, inferred, loader, mc, &mods),
+        requirement: build_requirement_with_measurements(
+            declared,
+            inferred,
+            client_java,
+            loader,
+            mc,
+            &mods,
+        ),
         loader,
         mods,
         declared_java: declared,
@@ -473,14 +732,25 @@ pub fn build_report(
             profile.mods.len().min(8)
         ));
         for probe in profile.mods.iter().take(8) {
-            lines.push(format!("  · {} → Java {}", probe.file, probe.java));
+            let outlier = if probe.highest > probe.java {
+                format!(
+                    "（最高 {}，取样 {} 个类中仅 {} 个）",
+                    probe.highest, probe.sampled, probe.highest_count
+                )
+            } else {
+                String::new()
+            };
+            lines.push(format!(
+                "  · {} → Java {}{}",
+                probe.file, probe.java, outlier
+            ));
         }
     }
 
     if req.unsatisfiable() {
         lines.push(String::new());
         lines.push(format!(
-            "无法同时满足：{} 上限是 Java {}，但模组要求 Java {}。请把模组换成匹配版本，或用对应版本重建实例。",
+            "无法同时满足：{} 上限是 Java {}，但实例实测要求 Java {}。请把模组换成匹配版本，或用对应版本重建实例。",
             profile.loader.label(),
             req.hard_max.unwrap_or(0),
             req.min
@@ -618,6 +888,178 @@ mod tests {
             ],
         );
         assert_eq!(jar_java_version(&jar), Some(21));
+    }
+
+    #[test]
+    fn test_jar_profile_ignores_a_single_high_outlier() {
+        // 实测自 Society Sunlit Valley：watervision 23 个类里只有 1 个是 Java 21
+        let tmp = tempfile::tempdir().unwrap();
+        let jar = tmp.path().join("watervision.jar");
+        let mut entries: Vec<(String, u16)> = (0..22)
+            .map(|i| (format!("com/old/C{}.class", i), 61))
+            .collect();
+        entries.push(("com/new/ExternalGlTexture.class".to_string(), 65));
+        write_jar_entries(&jar, &entries);
+
+        let profile = jar_java_profile(&jar).unwrap();
+        assert_eq!(profile.floor, 17);
+        assert_eq!(profile.highest, 21);
+        assert_eq!(profile.highest_count, 1);
+        assert_eq!(profile.sampled, 23);
+        // raw max 仍然保留，给安装器之类的老调用方
+        assert_eq!(jar_java_version(&jar), Some(21));
+    }
+
+    #[test]
+    fn test_jar_profile_counts_repeated_high_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jar = tmp.path().join("newmod.jar");
+        let mut entries: Vec<(String, u16)> = (0..20)
+            .map(|i| (format!("com/example/C{}.class", i), 61))
+            .collect();
+        entries.push(("com/example/A.class".to_string(), 65));
+        entries.push(("com/example/B.class".to_string(), 65));
+        write_jar_entries(&jar, &entries);
+
+        let profile = jar_java_profile(&jar).unwrap();
+        assert_eq!(profile.floor, 21);
+        assert_eq!(profile.highest_count, 2);
+    }
+
+    #[test]
+    fn test_jar_profile_trusts_a_tiny_jar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jar = tmp.path().join("tiny.jar");
+        write_jar(&jar, 65);
+        assert_eq!(jar_java_profile(&jar).unwrap().floor, 21);
+    }
+
+    #[test]
+    fn test_scan_mods_does_not_raise_floor_for_a_lone_class() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jar = tmp.path().join("watervision.jar");
+        let mut entries: Vec<(String, u16)> = (0..22)
+            .map(|i| (format!("com/old/C{}.class", i), 61))
+            .collect();
+        entries.push(("com/new/ExternalGlTexture.class".to_string(), 65));
+        write_jar_entries(&jar, &entries);
+
+        let probes = scan_mods(tmp.path());
+        assert_eq!(probes.len(), 1);
+        assert_eq!(probes[0].java, 17);
+        assert_eq!(probes[0].highest, 21);
+        assert_eq!(probes[0].highest_count, 1);
+    }
+
+    #[test]
+    fn test_client_jar_measurement_can_lower_the_declared_floor() {
+        let mods = vec![ModProbe {
+            file: "watervision.jar".to_string(),
+            java: 17,
+            highest: 21,
+            highest_count: 1,
+            sampled: 23,
+        }];
+        let req = build_requirement_with_measurements(
+            Some(21),
+            None,
+            Some(17),
+            LoaderKind::Vanilla,
+            None,
+            &mods,
+        );
+
+        assert_eq!(req.target, 21);
+        assert_eq!(req.min, 17);
+        assert!(java_allowed(&req, 17));
+        assert!(req.reasons.iter().any(|r| r.contains("客户端 jar 实测")));
+        assert!(req.reasons.iter().any(|r| r.contains("按孤立类忽略")));
+    }
+
+    #[test]
+    fn test_missing_client_jar_keeps_the_declared_floor() {
+        let req = build_requirement_with_measurements(
+            Some(21),
+            None,
+            None,
+            LoaderKind::Vanilla,
+            None,
+            &[],
+        );
+        assert_eq!(req.min, 21);
+    }
+
+    #[test]
+    fn test_mod_floor_still_wins_over_a_lower_client_measurement() {
+        let req = build_requirement_with_measurements(
+            Some(21),
+            None,
+            Some(17),
+            LoaderKind::Vanilla,
+            None,
+            &[probe("requires21.jar", 21)],
+        );
+        assert_eq!(req.min, 21);
+    }
+
+    /// 实例 JSON 自己带 jar 时直接读；加载器实例没 jar 时沿 inheritsFrom 找父版本
+    #[test]
+    fn test_measure_client_java_follows_inherits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let game = tmp.path().to_path_buf();
+        let versions = game.join("versions");
+
+        let parent_dir = versions.join("1.20.1");
+        fs::create_dir_all(&parent_dir).unwrap();
+        fs::write(
+            parent_dir.join("1.20.1.json"),
+            serde_json::to_string(&vanilla_json("1.20.1", 17)).unwrap(),
+        )
+        .unwrap();
+        write_jar(&parent_dir.join("1.20.1.jar"), 61);
+
+        let pack_id = "society";
+        let pack_dir = versions.join(pack_id);
+        fs::create_dir_all(&pack_dir).unwrap();
+        fs::write(
+            pack_dir.join(format!("{}.json", pack_id)),
+            serde_json::to_string(&serde_json::json!({
+                "id": pack_id,
+                "inheritsFrom": "1.20.1",
+                "javaVersion": { "majorVersion": 21 }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(measure_client_java(&game, pack_id), Some(17));
+
+        // 实例目录自己带 jar 时与父版本取更高者，防止漏掉加载器自带的客户端
+        write_jar(&pack_dir.join(format!("{}.jar", pack_id)), 65);
+        assert_eq!(measure_client_java(&game, pack_id), Some(21));
+    }
+
+    #[test]
+    fn test_analyze_uses_the_measured_jar_floor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let game = tmp.path().to_path_buf();
+        let pack_id = "society";
+        let pack_dir = game.join("versions").join(pack_id);
+        fs::create_dir_all(&pack_dir).unwrap();
+        fs::write(
+            pack_dir.join(format!("{}.json", pack_id)),
+            serde_json::to_string(&serde_json::json!({
+                "id": pack_id,
+                "javaVersion": { "majorVersion": 21 }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        write_jar(&pack_dir.join(format!("{}.jar", pack_id)), 61);
+
+        let profile = analyze(pack_id, &game);
+        assert_eq!(profile.requirement.target, 21);
+        assert_eq!(profile.requirement.min, 17);
     }
 
     #[test]
@@ -774,16 +1216,7 @@ mod tests {
 
     #[test]
     fn test_mod_class_version_raises_the_floor() {
-        let mods = vec![
-            ModProbe {
-                file: "newmod-1.0.jar".to_string(),
-                java: 21,
-            },
-            ModProbe {
-                file: "oldmod-1.0.jar".to_string(),
-                java: 8,
-            },
-        ];
+        let mods = vec![probe("newmod-1.0.jar", 21), probe("oldmod-1.0.jar", 8)];
         let req = build_requirement(Some(8), LoaderKind::Vanilla, &mods);
 
         assert_eq!(req.min, 21);
@@ -795,10 +1228,7 @@ mod tests {
 
     #[test]
     fn test_forge_with_newer_mod_is_unsatisfiable() {
-        let mods = vec![ModProbe {
-            file: "oops.jar".to_string(),
-            java: 21,
-        }];
+        let mods = vec![probe("oops.jar", 21)];
         let req = build_requirement(Some(8), LoaderKind::ForgeLegacy, &mods);
 
         assert!(req.unsatisfiable());
@@ -885,10 +1315,7 @@ mod tests {
         let profile = InstanceProfile {
             requirement: req,
             loader: LoaderKind::Vanilla,
-            mods: vec![ModProbe {
-                file: "a.jar".to_string(),
-                java: 21,
-            }],
+            mods: vec![probe("a.jar", 21)],
             declared_java: Some(21),
             resolved: true,
             version_id: "1.21.4".to_string(),
@@ -917,6 +1344,16 @@ mod tests {
         assert_eq!(probes[0].file, "live.jar");
     }
 
+    fn probe(file: &str, java: u32) -> ModProbe {
+        ModProbe {
+            file: file.to_string(),
+            java,
+            highest: java,
+            highest_count: 4,
+            sampled: 4,
+        }
+    }
+
     fn write_jar(path: &Path, class_major: u16) {
         use zip::write::SimpleFileOptions;
         let file = fs::File::create(path).unwrap();
@@ -940,14 +1377,15 @@ mod tests {
         zip.finish().unwrap();
     }
 
-    fn write_jar_entries(path: &Path, entries: &[(&str, u16)]) {
+    fn write_jar_entries<S: AsRef<str>>(path: &Path, entries: &[(S, u16)]) {
         use zip::write::SimpleFileOptions;
         let file = fs::File::create(path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
 
         for (name, class_major) in entries {
             let major = *class_major;
-            zip.start_file(*name, SimpleFileOptions::default()).unwrap();
+            zip.start_file((*name).as_ref(), SimpleFileOptions::default())
+                .unwrap();
             std::io::Write::write_all(
                 &mut zip,
                 &[

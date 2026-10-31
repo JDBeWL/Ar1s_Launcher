@@ -6,7 +6,10 @@ const mocks = vi.hoisted(() => ({
   downloadVersion: vi.fn(),
   validateVersionFiles: vi.fn(),
   launchInstance: vi.fn(),
+  getInstanceSettings: vi.fn(),
+  setInstanceSettings: vi.fn(),
   checkJavaCompatibility: vi.fn(),
+  choice: vi.fn(),
   confirm: vi.fn(),
   error: vi.fn(),
   success: vi.fn(),
@@ -20,13 +23,18 @@ vi.mock('../services', () => ({
     downloadVersion: mocks.downloadVersion,
     validateVersionFiles: mocks.validateVersionFiles,
   },
-  instanceApi: { launchInstance: mocks.launchInstance },
+  instanceApi: {
+    launchInstance: mocks.launchInstance,
+    getInstanceSettings: mocks.getInstanceSettings,
+    setInstanceSettings: mocks.setInstanceSettings,
+  },
   javaApi: { checkJavaCompatibility: mocks.checkJavaCompatibility },
 }));
 vi.mock('../i18n', () => ({ translate: (key: string) => key }));
 vi.mock('../utils/logger', () => ({ logError: vi.fn() }));
 vi.mock('../stores/notificationStore', () => ({
   useNotificationStore: () => ({
+    choice: mocks.choice,
     confirm: mocks.confirm,
     error: mocks.error,
     success: mocks.success,
@@ -74,6 +82,42 @@ describe('useGameLaunch 文件修复', () => {
     expect(isRepairing.value).toBe(false);
     expect(repairProgress.value).toBeNull();
     expect(mocks.error).toHaveBeenCalledTimes(1);
+  });
+
+  it('选择固定当前 Java 后写入实例设置并立即启动', async () => {
+    mocks.checkJavaCompatibility.mockResolvedValue({
+      compatible: false,
+      hardBlock: true,
+      diagnostic: '要求 Java 21',
+      currentJavaVersion: 17,
+      currentJavaPath: 'C:/jdk17/bin/java.exe',
+      requiredJavaVersion: 21,
+      recommendedJavaPath: 'C:/jdk25/bin/java.exe',
+      recommendedJavaVersion: 25,
+      recommendedJavaOptimal: false,
+      recommendedJavaWarning: null,
+      autoMatchEnabled: false,
+    });
+    mocks.choice.mockResolvedValue('fixed');
+    mocks.getInstanceSettings.mockResolvedValue({
+      javaPath: null,
+      memoryMb: null,
+      jvmExtraArgs: null,
+      windowWidth: null,
+      windowHeight: null,
+    });
+    mocks.setInstanceSettings.mockResolvedValue(undefined);
+    mocks.validateVersionFiles.mockResolvedValue([]);
+
+    const { launchInstance } = setup();
+    const launched = await launchInstance('A');
+
+    expect(launched).toBe(true);
+    expect(mocks.setInstanceSettings).toHaveBeenCalledWith(
+      'A',
+      expect.objectContaining({ javaPath: 'C:/jdk17/bin/java.exe' }),
+    );
+    expect(mocks.launchInstance).toHaveBeenCalledWith('A', undefined, true);
   });
 
   it('写盘失败时复位状态并退订', async () => {

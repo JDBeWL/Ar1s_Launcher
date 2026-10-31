@@ -131,7 +131,11 @@ impl ModInstaller {
         let context = resolve_context(instance_name).await?;
         let files = self
             .cf
-            .get_files(curseforge::CfResource::Mods, project_id, Some(&context.game_version))
+            .get_files(
+                curseforge::CfResource::Mods,
+                project_id,
+                Some(&context.game_version),
+            )
             .await?;
         Ok(files
             .iter()
@@ -154,10 +158,18 @@ impl ModInstaller {
 
         let files = self
             .cf
-            .get_files(curseforge::CfResource::Mods, &project_id, Some(&context.game_version))
+            .get_files(
+                curseforge::CfResource::Mods,
+                &project_id,
+                Some(&context.game_version),
+            )
             .await?;
 
-        let selected = match file_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        let selected = match file_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
             Some(id) => files
                 .iter()
                 .find(|file| file.id.to_string() == id)
@@ -406,7 +418,10 @@ fn pick_loader_match<'a>(
             .any(|tag| tag.eq_ignore_ascii_case(loader))
     };
 
-    Ok(files.iter().find(|file| matches_loader(file)).or(Some(first)))
+    Ok(files
+        .iter()
+        .find(|file| matches_loader(file))
+        .or(Some(first)))
 }
 
 /// 并发取版本并下载一轮依赖，返回 (序号, 安装结果, 新发现的依赖)

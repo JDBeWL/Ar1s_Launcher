@@ -13,6 +13,7 @@ pub mod instance;
 pub mod instance_logs;
 pub mod instance_settings;
 pub mod java;
+pub mod java_runtime;
 pub mod launcher;
 pub mod loaders;
 pub mod memory;

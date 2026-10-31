@@ -49,6 +49,53 @@ pub async fn download_file(
     bytes_downloaded: &Arc<AtomicU64>,
     bytes_since_last: &Arc<AtomicU64>,
 ) -> Result<(), LauncherError> {
+    download_file_inner(
+        http,
+        job,
+        url,
+        state,
+        global_cancel,
+        bytes_downloaded,
+        bytes_since_last,
+        true,
+    )
+    .await
+}
+
+/// 单连接下载：取消后 .part 保留，Java 包用它保证续传
+pub async fn download_file_single(
+    http: &reqwest::Client,
+    job: &DownloadJob,
+    url: &str,
+    state: &Arc<AtomicBool>,
+    global_cancel: &Arc<AtomicBool>,
+    bytes_downloaded: &Arc<AtomicU64>,
+    bytes_since_last: &Arc<AtomicU64>,
+) -> Result<(), LauncherError> {
+    download_file_inner(
+        http,
+        job,
+        url,
+        state,
+        global_cancel,
+        bytes_downloaded,
+        bytes_since_last,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_file_inner(
+    http: &reqwest::Client,
+    job: &DownloadJob,
+    url: &str,
+    state: &Arc<AtomicBool>,
+    global_cancel: &Arc<AtomicBool>,
+    bytes_downloaded: &Arc<AtomicU64>,
+    bytes_since_last: &Arc<AtomicU64>,
+    allow_multipart: bool,
+) -> Result<(), LauncherError> {
     if !state.load(Ordering::Acquire) || global_cancel.load(Ordering::Acquire) {
         return Err(LauncherError::Cancelled);
     }
@@ -90,6 +137,7 @@ pub async fn download_file(
             global_cancel,
             bytes_downloaded,
             bytes_since_last,
+            allow_multipart,
         )
         .await
         {
@@ -148,6 +196,7 @@ fn should_try_fallback(e: &LauncherError) -> bool {
         || err_str.contains("Unexpected Content-Type")
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_with_resume(
     client: &reqwest::Client,
     url: &str,
@@ -156,6 +205,7 @@ async fn download_with_resume(
     global_cancel: &Arc<AtomicBool>,
     bytes_downloaded: &Arc<AtomicU64>,
     bytes_since_last: &Arc<AtomicU64>,
+    allow_multipart: bool,
 ) -> Result<(), LauncherError> {
     // 小于阈值的文件直接写目标路径：省掉一次 .part + rename 的元数据往返，
     // 也少触发一遍杀毒扫描；这类文件重下代价本来就低，不需要续传
@@ -224,6 +274,7 @@ async fn download_with_resume(
         bytes_downloaded,
         bytes_since_last,
         resume_from,
+        allow_multipart,
     )
     .await
 }
@@ -241,8 +292,10 @@ async fn dispatch_download(
     bytes_downloaded: &Arc<AtomicU64>,
     bytes_since_last: &Arc<AtomicU64>,
     resume_from: Option<u64>,
+    allow_multipart: bool,
 ) -> Result<(), LauncherError> {
-    if resume_from.is_none()
+    if allow_multipart
+        && resume_from.is_none()
         && job.size >= MULTIPART_MIN_BYTES
         && let Some((segments, _permit)) = acquire_multipart_permits(job.size)
     {

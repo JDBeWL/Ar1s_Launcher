@@ -22,6 +22,10 @@ export default {
     useTempJava: 'Use Java {version} for now',
     enableAutoMatch: 'Enable auto-match',
     chooseManualJava: 'Choose Java manually',
+    fixCurrentJava: 'Always use Java {version} for this instance',
+    javaFixedTitle: 'Java fixed',
+    javaFixedHint: '{name} will keep using this Java and skip auto-match',
+    javaFixedFailed: 'Failed to fix Java',
     continueAnyway: 'Launch with the current Java',
     continueLaunch: 'Continue launching',
     manualJavaHint: 'Pick a compatible Java path in Settings',
@@ -45,6 +49,7 @@ export default {
     copyFailed: 'Copy failed, please select the text in the dialog',
     close: 'Close',
     relaunchWithJava: 'Relaunch with Java {version}',
+    relaunchWithJavaBelow: 'Retry with Java {version} anyway (below requirement)',
   },
 
   errors: {

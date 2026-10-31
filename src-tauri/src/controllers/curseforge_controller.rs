@@ -4,7 +4,9 @@
 //! 响应结构与 Modrinth 命令同构，前端按平台选择调用目标
 
 use crate::errors::LauncherError;
-use crate::models::modpack::{ModpackInstallOptions, ModrinthModpackVersion, ModrinthSearchResponse};
+use crate::models::modpack::{
+    ModpackInstallOptions, ModrinthModpackVersion, ModrinthSearchResponse,
+};
 use crate::services::curseforge::{
     CfCategory, CfManualFile, CfProjectRef, CfResource, CurseForgeService,
 };
@@ -22,9 +24,7 @@ pub async fn get_curseforge_modpack_categories() -> Result<Vec<CfCategory>, Laun
 /// 把 CurseForge 链接 / slug / 数字 ID 解析成项目引用。
 /// 搜索库未收录的项目（新包常见）也能借此拿到数字 ID 直接进版本列表
 #[tauri::command]
-pub async fn resolve_curseforge_modpack(
-    input: String,
-) -> Result<CfProjectRef, LauncherError> {
+pub async fn resolve_curseforge_modpack(input: String) -> Result<CfProjectRef, LauncherError> {
     CurseForgeService::new()
         .resolve_project(CfResource::Modpacks, &input)
         .await

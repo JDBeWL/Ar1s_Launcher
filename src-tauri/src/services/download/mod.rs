@@ -11,9 +11,9 @@ mod state;
 mod version;
 
 pub use batch::download_all_files;
-pub use file::download_file;
-pub use http::get_http_client;
+pub use file::{download_file, download_file_single};
 pub(crate) use http::reload as reload_http_client;
+pub use http::{get_http_client, get_java_download_client};
 pub use manifest::get_versions;
 pub use version::ensure_declared_libraries;
 pub use version::ensure_version_core;

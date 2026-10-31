@@ -96,10 +96,8 @@ pub fn read_manifest_from_archive(path: &Path) -> Result<CfManifest, LauncherErr
     let mut text = String::new();
     // zip 头声明的 size 可以造假，按实际读到的字节流再限一次
     entry.take(MAX_MANIFEST_BYTES).read_to_string(&mut text)?;
-    let manifest: CfManifest =
-        serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| {
-            LauncherError::Custom(format!("解析 {} 失败: {}", CF_MANIFEST_FILE, e))
-        })?;
+    let manifest: CfManifest = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .map_err(|e| LauncherError::Custom(format!("解析 {} 失败: {}", CF_MANIFEST_FILE, e)))?;
 
     validate_manifest(&manifest)?;
     Ok(manifest)
@@ -117,7 +115,10 @@ pub fn validate_manifest(manifest: &CfManifest) -> Result<(), LauncherError> {
             "整合包没有声明 Minecraft 版本".to_string(),
         ));
     }
-    if let Some(bad) = manifest.files.iter().find(|file| file.project_id == 0 || file.file_id == 0)
+    if let Some(bad) = manifest
+        .files
+        .iter()
+        .find(|file| file.project_id == 0 || file.file_id == 0)
     {
         return Err(LauncherError::Custom(format!(
             "整合包清单包含非法文件引用，已拒绝安装: projectID {} fileID {}",
@@ -132,7 +133,13 @@ pub fn validate_manifest(manifest: &CfManifest) -> Result<(), LauncherError> {
 /// `fabric-loader-0.15.0` 的前缀本身带连字符，所以按已知前缀最长优先匹配，
 /// 而不是简单地在第一个 `-` 处切分
 fn split_loader_id(loader_id: &str) -> Option<(&'static str, &str)> {
-    const PREFIXES: [&str; 5] = ["fabric-loader", "quilt-loader", "neoforge", "quilt", "forge"];
+    const PREFIXES: [&str; 5] = [
+        "fabric-loader",
+        "quilt-loader",
+        "neoforge",
+        "quilt",
+        "forge",
+    ];
     let loader_id = loader_id.trim();
     for prefix in PREFIXES {
         if let Some(rest) = loader_id.strip_prefix(prefix)

@@ -199,10 +199,14 @@ pub fn choose_java(req: &JavaRequirement, candidates: &[JavaCandidate]) -> Optio
         return None;
     }
 
-    let floor = req.min;
+    // 声明值是首选目标；目标缺失时按与它的距离退让（同距取低版本），
+    // 避免 21 没装时从 17/25 里挑到更激进的 25
+    let target = req.target;
     let chosen = allowed.iter().copied().min_by(|a, b| {
-        (a.version - floor)
-            .cmp(&(b.version - floor))
+        a.version
+            .abs_diff(target)
+            .cmp(&b.version.abs_diff(target))
+            .then_with(|| a.version.cmp(&b.version))
             // 同版本优先 64 位：32 位 JVM 连 1.5G 堆都开不出来
             .then_with(|| a.arch.rank().cmp(&b.arch.rank()))
             .then_with(|| a.is_ea.cmp(&b.is_ea))
@@ -211,28 +215,38 @@ pub fn choose_java(req: &JavaRequirement, candidates: &[JavaCandidate]) -> Optio
             .then_with(|| a.path.cmp(&b.path))
     })?;
 
-    let matched_floor = chosen.version == req.min;
+    let chosen_floor_met = chosen.version == req.min;
     let raised_by_mods = req.min > req.target;
+    let is_optimal = chosen.version == req.target || (raised_by_mods && chosen_floor_met);
     let band = match req.hard_max {
         Some(max) => format!("{}~{}", req.min, max),
         None => format!("{}+", req.min),
     };
 
-    let warning = if matched_floor && !raised_by_mods {
+    let warning = if chosen.version == req.target {
         None
-    } else if matched_floor {
+    } else if raised_by_mods {
+        if chosen_floor_met {
+            let text = format!(
+                "模组或客户端 jar 把 Java 下限抬到 {}（声明 {}），已选用 Java {}",
+                req.min, req.target, chosen.version
+            );
+            log::info!("{}", text);
+            Some(text)
+        } else {
+            let text = format!(
+                "模组要求（或客户端 jar 实测）Java ≥ {}（声明 {}），本机没有 Java {}，改用 Java {}",
+                req.min, req.target, req.min, chosen.version
+            );
+            log::warn!("{}", text);
+            Some(text)
+        }
+    } else if chosen.version < req.target {
         let text = format!(
-            "模组把 Java 下限抬到 {}（Mojang 声明 {}），已选用 Java {}",
-            req.min, req.target, chosen.version
+            "本机没有声明的 Java {}；客户端 jar/模组实测下限为 Java {}，已用 Java {}",
+            req.target, req.min, chosen.version
         );
         log::info!("{}", text);
-        Some(text)
-    } else if raised_by_mods {
-        let text = format!(
-            "模组要求 Java ≥ {}（Mojang 声明 {}），本机没有 Java {}，改用 Java {}",
-            req.min, req.target, req.min, chosen.version
-        );
-        log::warn!("{}", text);
         Some(text)
     } else {
         let text = format!(
@@ -246,7 +260,7 @@ pub fn choose_java(req: &JavaRequirement, candidates: &[JavaCandidate]) -> Optio
     Some(JavaMatchResult {
         path: chosen.path.clone(),
         version: chosen.version,
-        is_optimal: matched_floor,
+        is_optimal,
         warning,
     })
 }
@@ -396,6 +410,39 @@ mod tests {
         let chosen = choose_java(&req(17, 17, None), &candidates).unwrap();
 
         assert_eq!(chosen.version, 17);
+        assert!(chosen.warning.is_none());
+    }
+
+    /// 21 没装、只有 17/25 时，声明值只能退让；两边距离相同，取低版本的 17
+    /// 而不是更激进、更容易撞上加载器兼容问题的 25
+    #[test]
+    fn test_missing_declared_target_prefers_the_closer_lower_java() {
+        let candidates = vec![
+            candidate("C:/jdk25/bin/java.exe", 25, JavaArch::Bits64, false),
+            candidate("C:/jdk17/bin/java.exe", 17, JavaArch::Bits64, false),
+        ];
+
+        let chosen = choose_java(&req(17, 21, None), &candidates).unwrap();
+
+        assert_eq!(chosen.version, 17);
+        assert!(!chosen.is_optimal);
+        let warning = chosen.warning.unwrap();
+        assert!(warning.contains("实测下限"), "{}", warning);
+        assert!(warning.contains("Java 21"), "{}", warning);
+    }
+
+    #[test]
+    fn test_installed_declared_target_beats_lower_and_higher() {
+        let candidates = vec![
+            candidate("C:/jdk17/bin/java.exe", 17, JavaArch::Bits64, false),
+            candidate("C:/jdk21/bin/java.exe", 21, JavaArch::Bits64, false),
+            candidate("C:/jdk25/bin/java.exe", 25, JavaArch::Bits64, false),
+        ];
+
+        let chosen = choose_java(&req(17, 21, None), &candidates).unwrap();
+
+        assert_eq!(chosen.version, 21);
+        assert!(chosen.is_optimal);
         assert!(chosen.warning.is_none());
     }
 

@@ -6,6 +6,8 @@
 use std::sync::{LazyLock, RwLock};
 use std::time::Duration;
 
+const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Ar1sLauncher/1.0";
+
 static HTTP_CLIENT: LazyLock<RwLock<reqwest::Client>> =
     LazyLock::new(|| RwLock::new(create_client(16)));
 
@@ -17,6 +19,11 @@ pub fn get_http_client() -> reqwest::Client {
         .clone()
 }
 
+/// TUNA 对浏览器 UA 的直链请求回 403，Java 包下载用简洁 UA；代理仍沿用当前设置
+pub fn get_java_download_client() -> reqwest::Client {
+    build_client(16, "Ar1sLauncher/1.0")
+}
+
 pub(crate) fn reload() {
     let client = create_client(16);
     *HTTP_CLIENT
@@ -25,14 +32,20 @@ pub(crate) fn reload() {
 }
 
 fn create_client(max_connections_per_host: usize) -> reqwest::Client {
-    match crate::services::proxy::apply(client_builder(max_connections_per_host)).build() {
+    build_client(max_connections_per_host, DEFAULT_USER_AGENT)
+}
+
+fn build_client(max_connections_per_host: usize, user_agent: &'static str) -> reqwest::Client {
+    match crate::services::proxy::apply(client_builder(max_connections_per_host, user_agent))
+        .build()
+    {
         Ok(client) => client,
         Err(error) => {
             log::error!(
                 "创建下载 HTTP 客户端失败，回退为不启用代理的客户端: {}",
                 error
             );
-            client_builder(max_connections_per_host)
+            client_builder(max_connections_per_host, user_agent)
                 .build()
                 .unwrap_or_else(|fallback_error| {
                     log::error!(
@@ -45,13 +58,14 @@ fn create_client(max_connections_per_host: usize) -> reqwest::Client {
     }
 }
 
-fn client_builder(max_connections_per_host: usize) -> reqwest::ClientBuilder {
+fn client_builder(
+    max_connections_per_host: usize,
+    user_agent: &'static str,
+) -> reqwest::ClientBuilder {
     let mut default_headers = reqwest::header::HeaderMap::new();
     default_headers.insert(
         reqwest::header::USER_AGENT,
-        reqwest::header::HeaderValue::from_static(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Ar1sLauncher/1.0",
-        ),
+        reqwest::header::HeaderValue::from_static(user_agent),
     );
     default_headers.insert(
         reqwest::header::ACCEPT_ENCODING,

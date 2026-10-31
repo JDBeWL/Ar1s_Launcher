@@ -61,7 +61,9 @@
                 class="mt-3"
               >
                 <template #title>
-                  {{ t('installModpack.manualDownloadsTitle', { count: manualDownloads.length }, manualDownloads.length) }}
+                  {{
+                    t('installModpack.manualDownloadsTitle', { count: manualDownloads.length }, manualDownloads.length)
+                  }}
                 </template>
                 <div class="text-body-small">{{ t('installModpack.manualDownloadsHint') }}</div>
                 <div class="mt-2">
@@ -84,12 +86,7 @@
                   >
                     {{ t('installModpack.copyManualUrls') }}
                   </v-btn>
-                  <v-btn
-                    size="small"
-                    variant="tonal"
-                    color="primary"
-                    @click="runPostInstall"
-                  >
+                  <v-btn size="small" variant="tonal" color="primary" @click="runPostInstall">
                     {{ t('installModpack.continueInstall') }}
                   </v-btn>
                 </div>
@@ -771,8 +768,7 @@ const filteredModpackVersions = computed(() => {
   return filtered.map((v) => ({
     ...v,
     // CurseForge 的文件即版本模型里 name 与 version_number 同源，拼在一起会重复
-    displayName:
-      v.name === v.version_number ? v.name : `${v.name} (${v.version_number})`,
+    displayName: v.name === v.version_number ? v.name : `${v.name} (${v.version_number})`,
   }));
 });
 
@@ -854,9 +850,7 @@ async function install() {
         install_path: '',
       };
       // CF 安装返回受限文件清单；Modrinth 安装没有返回值
-      manualDownloads.value = isCurseforge
-        ? await curseforgeApi.installModpack(installOptions)
-        : [];
+      manualDownloads.value = isCurseforge ? await curseforgeApi.installModpack(installOptions) : [];
       if (!isCurseforge) {
         await modpackApi.installModrinthModpack(installOptions);
       }
@@ -921,7 +915,10 @@ async function runPostInstall() {
 }
 
 async function copyManualUrls() {
-  const urls = manualDownloads.value.map((file) => file.url).filter(Boolean).join('\n');
+  const urls = manualDownloads.value
+    .map((file) => file.url)
+    .filter(Boolean)
+    .join('\n');
   const ok = await copyText(urls);
   if (ok) {
     notificationStore.info(t('installModpack.urlsCopied'), undefined);

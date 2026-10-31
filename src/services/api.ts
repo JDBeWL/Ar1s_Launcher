@@ -23,6 +23,8 @@ import type {
   DeviceCodeDisplay,
   MicrosoftLoginResult,
   JavaCompatibilityResult,
+  JavaDownloadOption,
+  JavaDownloadProgress,
   GameConfig,
   InstanceSettings,
   MemoryStats,
@@ -247,6 +249,26 @@ export const javaApi = {
 
   async checkJavaCompatibility(mcVersion: string): Promise<JavaCompatibilityResult> {
     return invokeCommand<JavaCompatibilityResult>('check_java_compatibility', { mcVersion });
+  },
+
+  async getJavaDownloadOptions(): Promise<JavaDownloadOption[]> {
+    return invokeCommand<JavaDownloadOption[]>('get_java_download_options');
+  },
+
+  async getJavaDownloadState(): Promise<JavaDownloadProgress | null> {
+    return invokeCommand<JavaDownloadProgress | null>('get_java_download_state');
+  },
+
+  async downloadJavaRuntime(feature: number): Promise<void> {
+    return invokeCommand('download_java_runtime', { feature });
+  },
+
+  async cancelJavaDownload(): Promise<void> {
+    return invokeCommand('cancel_java_download');
+  },
+
+  async deleteJavaRuntime(feature: number): Promise<void> {
+    return invokeCommand('delete_java_runtime', { feature });
   },
 };
 

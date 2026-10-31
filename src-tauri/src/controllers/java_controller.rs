@@ -3,8 +3,9 @@
 //! 本机 Java 扫描与自定义路径管理的 invoke 入口，兼容性判定前先把实例 ID 解析成真实 MC 版本
 
 use crate::errors::LauncherError;
-use crate::models::JavaCompatibilityResult;
+use crate::models::{JavaCompatibilityResult, JavaDownloadOption, JavaDownloadProgress};
 use crate::services::config::load_config;
+use crate::services::java_runtime;
 use crate::services::launcher::java;
 use crate::services::launcher::java_requirement;
 
@@ -78,8 +79,8 @@ pub async fn check_java_compatibility(
 
         let instance_settings =
             crate::services::instance_settings::load(&mc_version).unwrap_or_default();
-        let current_java_path = instance_settings
-            .java_path
+        let instance_java_path = instance_settings.java_path.clone();
+        let current_java_path = instance_java_path
             .clone()
             .or_else(|| config.java_path.clone());
         let auto_match_enabled = config.auto_match_java && instance_settings.java_path.is_none();
@@ -87,10 +88,26 @@ pub async fn check_java_compatibility(
             .as_deref()
             .and_then(java::detect_java_version);
 
-        // 版本 JSON 读不到时不硬拦，只按声明下限判；探测不到当前 Java 也按不兼容提示，但不阻断
+        // 实例级固定 Java 是用户的明确选择，不再当作硬阻断；启动闸门也只警告不替换。
+        // 探测不到版本时不放行，避免路径填错后连提示都没有
+        let explicit_java = instance_java_path.is_some() && current_java_version.is_some();
         let allowed = current_java_version.is_some_and(|v| java_requirement::java_allowed(req, v));
-        let compatible = !profile.resolved || allowed;
-        let hard_block = profile.resolved && current_java_version.is_some() && !allowed;
+        let compatible = !profile.resolved || allowed || explicit_java;
+        let hard_block =
+            !explicit_java && profile.resolved && current_java_version.is_some() && !allowed;
+
+        if explicit_java && !allowed {
+            log::warn!(
+                "实例 {} 固定使用 Java {}，不满足判据（要求 Java {}{}）；按用户选择继续",
+                mc_version,
+                current_java_version.unwrap_or(0),
+                req.min,
+                match req.hard_max {
+                    Some(max) => format!("~{}", max),
+                    None => "+".to_string(),
+                }
+            );
+        }
 
         let candidates = java::collect_candidates(&config);
         let match_result = java::choose_java(req, &candidates);
@@ -127,4 +144,32 @@ pub async fn check_java_compatibility(
     })
     .await
     .map_err(|e| LauncherError::Custom(format!("后台任务执行失败: {}", e)))?
+}
+
+#[tauri::command]
+pub async fn get_java_download_options() -> Result<Vec<JavaDownloadOption>, LauncherError> {
+    java_runtime::options().await
+}
+
+#[tauri::command]
+pub fn get_java_download_state() -> Option<JavaDownloadProgress> {
+    java_runtime::current_progress()
+}
+
+#[tauri::command]
+pub async fn download_java_runtime(
+    app: tauri::AppHandle,
+    feature: u32,
+) -> Result<(), LauncherError> {
+    java_runtime::download(app, feature).await
+}
+
+#[tauri::command]
+pub fn cancel_java_download() {
+    java_runtime::cancel();
+}
+
+#[tauri::command]
+pub async fn delete_java_runtime(feature: u32) -> Result<(), LauncherError> {
+    java_runtime::delete(feature).await
 }

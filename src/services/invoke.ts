@@ -38,6 +38,7 @@ const UNBOUNDED_TIMEOUT_COMMANDS = new Set([
   'find_java_installations_command',
   'refresh_java_installations',
   'check_java_compatibility',
+  'download_java_runtime',
   'export_diagnostic_bundle',
   'launch_instance',
   'complete_microsoft_login',

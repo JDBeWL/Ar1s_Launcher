@@ -385,12 +385,16 @@ pub struct InstanceInfo {
 }
 
 pub mod instance_settings;
+pub mod java_runtime;
 pub mod logs;
 pub mod modpack;
 pub mod saves;
 pub mod screenshots;
 
 pub use instance_settings::InstanceSettings;
+pub use java_runtime::{
+    JavaDownloadOption, JavaDownloadPhase, JavaDownloadProgress, ManagedJavaState,
+};
 pub use logs::{
     ContentTarget, CrashReportInfo, CrashReportText, LAUNCH_HISTORY_LIMIT, LaunchOutcome,
     LaunchRecord, LogTail,

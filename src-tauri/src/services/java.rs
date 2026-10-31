@@ -576,6 +576,12 @@ fn get_java_installation_dirs() -> Vec<PathBuf> {
         }
     }
 
+    dirs.push(
+        crate::services::config::init_storage()
+            .join("runtime")
+            .join("java"),
+    );
+
     dirs.into_iter().filter(|dir| dir.exists()).collect()
 }
 

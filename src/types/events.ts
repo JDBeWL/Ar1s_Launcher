@@ -13,6 +13,29 @@ export interface DownloadProgress {
   error?: string;
 }
 
+export type ManagedJavaState = 'notInstalled' | 'installed' | 'broken';
+export type JavaDownloadPhase = 'downloading' | 'extracting' | 'completed' | 'cancelled' | 'error';
+
+export interface JavaDownloadOption {
+  feature: number;
+  releaseName: string;
+  packageName: string;
+  size: number;
+  state: ManagedJavaState;
+  installedVersion?: string;
+  installedPath?: string;
+}
+
+export interface JavaDownloadProgress {
+  feature: number;
+  phase: JavaDownloadPhase;
+  bytesDownloaded: number;
+  totalBytes: number;
+  speed: number;
+  percent: number;
+  error?: string;
+}
+
 export interface GameExitPayload {
   code: number | null;
   signal: string | null;
@@ -575,6 +598,8 @@ export interface CrashContextLine {
 export interface CrashSuggestedJava {
   path: string;
   version: number;
+  /** true = 低于判据下限，仅作尝试 */
+  belowRequirement: boolean;
 }
 
 export interface CrashDiagnosis {

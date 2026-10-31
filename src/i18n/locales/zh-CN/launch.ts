@@ -20,6 +20,10 @@ export default {
     useTempJava: '临时使用 Java {version}',
     enableAutoMatch: '开启自动匹配',
     chooseManualJava: '手动选择 Java',
+    fixCurrentJava: '固定用 Java {version} 启动（此实例）',
+    javaFixedTitle: '已固定 Java',
+    javaFixedHint: '{name} 之后将使用这份 Java，不再自动匹配',
+    javaFixedFailed: '固定 Java 失败',
     continueAnyway: '仍用当前 Java 启动',
     continueLaunch: '继续启动',
     manualJavaHint: '请在设置中手动选择兼容的 Java 路径',
@@ -43,6 +47,7 @@ export default {
     copyFailed: '复制失败，请在弹窗里手动选中文字',
     close: '关闭',
     relaunchWithJava: '用 Java {version} 重新启动',
+    relaunchWithJavaBelow: '仍用 Java {version} 重试（低于判据，仅尝试）',
   },
 
   errors: {
