@@ -1,6 +1,6 @@
 //! 游戏进程启动和监控逻辑
 //!
-//! 派生隐藏控制台的 Java 子进程，日志经有界队列批量转发，退出时回显日志尾巴与 hs_err_pid
+//! 派生隐藏控制台的 Java 子进程，输出只留在诊断缓冲里，退出时回显日志尾巴与 hs_err_pid
 
 use super::crash_diagnosis::{self, LaunchContext};
 use crate::errors::LauncherError;
@@ -9,31 +9,15 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::Emitter;
 
 const MAX_GAME_RUNTIME: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// 队列满时直接丢弃，绝不阻塞读取线程——堵住会让管道写满，游戏日志线程卡住，表现为周期性掉帧
-const LOG_QUEUE_CAPACITY: usize = 4096;
-
-const LOG_FLUSH_MAX_LINES: usize = 200;
-
-const LOG_FLUSH_INTERVAL: Duration = Duration::from_millis(200);
-
-const LOG_FLUSH_WAIT: Duration = Duration::from_secs(2);
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LogStream {
-    Stdout,
-    Stderr,
-}
-
-type LogItem = (LogStream, String);
+/// 进程退出后等两个读线程把管道读空；子进程留下的孙进程可能攥着管道，不能无限等
+const READER_DRAIN_WAIT: Duration = Duration::from_secs(2);
 
 /// 诊断要读完整输出，4 MiB 足够装下一次启动的全部输出
 const MAX_CAPTURED_BYTES: usize = 4 * 1024 * 1024;
@@ -207,46 +191,19 @@ fn spawn_monitor_thread(
     let is_running = Arc::new(AtomicBool::new(true));
     let captured: Arc<Mutex<OutputCapture>> = Arc::new(Mutex::new(OutputCapture::default()));
 
-    let (log_tx, log_rx) = mpsc::sync_channel::<LogItem>(LOG_QUEUE_CAPACITY);
-
-    let tx_stdout: SyncSender<LogItem> = log_tx.clone();
-    let capture_stdout = captured.clone();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        // 读到 EOF 为止：进程秒退时管道里还压着最后几行报错，提前 break 会让崩溃弹窗没有输出
-        for line in reader.lines() {
-            match line {
-                Ok(l) => {
-                    push_line(&capture_stdout, &l);
-                    let _ = tx_stdout.try_send((LogStream::Stdout, l));
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    let tx_stderr: SyncSender<LogItem> = log_tx;
-    let capture_stderr = captured.clone();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines() {
-            match line {
-                Ok(l) => {
-                    push_line(&capture_stderr, &l);
-                    let _ = tx_stderr.try_send((LogStream::Stderr, l));
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    let forwarder_done = Arc::new(AtomicBool::new(false));
-    let forwarder_done_flag = forwarder_done.clone();
-    let window_forwarder = window.clone();
-    let forwarder: JoinHandle<()> = std::thread::spawn(move || {
-        forward_game_logs(log_rx, &window_forwarder);
-        forwarder_done_flag.store(true, Ordering::SeqCst);
-    });
+    // 读线程在管道 EOF 后各减一，监控线程等它归零再取诊断缓冲；
+    // 进程秒退时管道里还压着最后几行报错，提前取走会让崩溃弹窗缺尾部输出
+    let readers_remaining = Arc::new(AtomicUsize::new(2));
+    spawn_output_reader(
+        BufReader::new(stdout),
+        captured.clone(),
+        readers_remaining.clone(),
+    );
+    spawn_output_reader(
+        BufReader::new(stderr),
+        captured.clone(),
+        readers_remaining.clone(),
+    );
 
     std::thread::spawn(move || {
         let start_time = Instant::now();
@@ -279,10 +236,7 @@ fn spawn_monitor_thread(
         match wait_for_process_holding_lock(&mut child, MAX_GAME_RUNTIME, run_lock) {
             Ok(Some(status)) => {
                 is_running_main.store(false, Ordering::SeqCst);
-                wait_log_flushed(&forwarder_done);
-                if forwarder_done.load(Ordering::SeqCst) {
-                    let _ = forwarder.join();
-                }
+                wait_for_readers(&readers_remaining, READER_DRAIN_WAIT);
                 let lines = captured.lock().map(|buf| buf.finish()).unwrap_or_default();
                 let elapsed = start_time.elapsed();
                 handle_process_exit(
@@ -343,60 +297,29 @@ fn push_line(captured: &Mutex<OutputCapture>, line: &str) {
     }
 }
 
-fn wait_log_flushed(forwarder_done: &AtomicBool) {
-    let deadline = Instant::now() + LOG_FLUSH_WAIT;
-    while !forwarder_done.load(Ordering::SeqCst) && Instant::now() < deadline {
+fn spawn_output_reader(
+    reader: impl BufRead + Send + 'static,
+    captured: Arc<Mutex<OutputCapture>>,
+    remaining: Arc<AtomicUsize>,
+) {
+    std::thread::spawn(move || {
+        // 读到 EOF 为止：进程秒退时管道里还压着最后几行报错，提前 break 会让崩溃弹窗没有输出
+        for line in reader.lines() {
+            match line {
+                Ok(line) => push_line(&captured, &line),
+                Err(_) => break,
+            }
+        }
+        remaining.fetch_sub(1, Ordering::SeqCst);
+    });
+}
+
+fn wait_for_readers(remaining: &AtomicUsize, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while remaining.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-
-/// 按固定节奏批量转发日志到前端，避免逐行事件淹没 WebView
-fn forward_game_logs(rx: Receiver<LogItem>, window: &tauri::Window) {
-    let mut batch: Vec<LogItem> = Vec::with_capacity(LOG_FLUSH_MAX_LINES);
-
-    loop {
-        match rx.recv_timeout(LOG_FLUSH_INTERVAL) {
-            Ok(item) => {
-                batch.push(item);
-                while batch.len() < LOG_FLUSH_MAX_LINES {
-                    match rx.try_recv() {
-                        Ok(item) => batch.push(item),
-                        Err(_) => break,
-                    }
-                }
-                flush_log_batch(&batch, window);
-                batch.clear();
-            }
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
-    flush_log_batch(&batch, window);
-}
-
-fn flush_log_batch(batch: &[LogItem], window: &tauri::Window) {
-    if batch.is_empty() {
-        return;
-    }
-
-    let mut out = String::new();
-    let mut err = String::new();
-    for (stream, line) in batch {
-        let target = match stream {
-            LogStream::Stdout => &mut out,
-            LogStream::Stderr => &mut err,
-        };
-        target.push_str(line);
-        target.push('\n');
-    }
-
-    if !out.is_empty() {
-        let _ = window.emit("log-debug", out);
-    }
-    if !err.is_empty() {
-        let _ = window.emit("log-error", err);
-    }
+    remaining.load(Ordering::SeqCst) == 0
 }
 
 fn wait_for_process_with_timeout(
@@ -706,13 +629,15 @@ mod tests {
     use super::{
         OutputCapture, choose_lower_java, exit_message, find_hs_err_log, find_new_crash_report,
         is_client_shutdown_watchdog, redacted_args, wait_for_process_holding_lock,
+        wait_for_readers,
     };
     use crate::services::launcher::java::{JavaArch, JavaCandidate};
     use crate::services::launcher::java_requirement::JavaRequirement;
     use std::fs;
     use std::path::Path;
     use std::process::{Command, Stdio};
-    use std::time::{Duration, SystemTime};
+    use std::sync::atomic::AtomicUsize;
+    use std::time::{Duration, Instant, SystemTime};
 
     fn args(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
@@ -980,6 +905,24 @@ java.lang.Error: Watchdog (Client shutdown from post-main)
             ["--accessToken=***", "--gameDir", "dir"]
         );
         assert!(redacted_args(&Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn test_wait_for_readers_returns_once_both_pipes_are_drained() {
+        let remaining = AtomicUsize::new(0);
+        let start = Instant::now();
+
+        assert!(wait_for_readers(&remaining, Duration::from_secs(1)));
+        assert!(start.elapsed() < Duration::from_millis(200));
+    }
+
+    #[test]
+    fn test_wait_for_readers_gives_up_after_the_deadline() {
+        let remaining = AtomicUsize::new(1);
+        let start = Instant::now();
+
+        assert!(!wait_for_readers(&remaining, Duration::from_millis(60)));
+        assert!(start.elapsed() >= Duration::from_millis(60));
     }
 
     #[test]

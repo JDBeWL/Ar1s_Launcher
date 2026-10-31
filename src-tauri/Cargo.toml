@@ -1,6 +1,6 @@
 [package]
 name = "ar1s_launcher"
-version = "0.9.8"
+version = "0.9.9"
 description = "Ar1s Launcher"
 authors = ["JDBeWL"]
 edition = "2024"

@@ -6,12 +6,14 @@
  */
 import { computed, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import type { VVirtualScroll } from 'vuetify/components';
 import ModBrowserDialog from './ModBrowserDialog.vue';
 import { useInstanceScope } from '../../composables/useInstanceScope';
 import { useNotificationStore } from '../../stores/notificationStore';
 import { configApi, instanceApi, modApi } from '../../services';
 import type { ModInfo, ModUpdate } from '../../types/events';
 import { getErrorMessage } from '../../utils/format';
+import { setModEnabledInList } from '../../utils/modList';
 import { logError } from '../../utils/logger';
 
 const props = defineProps<{
@@ -66,6 +68,18 @@ const filteredMods = computed(() => {
   );
 });
 
+const MOD_ROW_HEIGHT = 56;
+const MODS_VIEWPORT_MAX = 480;
+
+const modListRef = ref<InstanceType<typeof VVirtualScroll> | null>(null);
+
+const modsListHeight = computed(() => Math.min(filteredMods.value.length * MOD_ROW_HEIGHT, MODS_VIEWPORT_MAX));
+
+// 过滤后列表变短，旧的滚动位置会停在末尾；回到顶部才看得到匹配项
+watch(searchTerm, () => {
+  modListRef.value?.scrollToIndex(0);
+});
+
 async function loadMods() {
   // 快速切换实例时旧实例的慢响应后到会覆盖新列表，之后按旧文件名操作就会写错目录
   const task = scope.begin();
@@ -98,11 +112,12 @@ async function loadIsolationSetting() {
 
 async function toggleMod(mod: ModInfo) {
   const task = scope.begin();
+  const enabled = !mod.enabled;
   busyFile.value = mod.fileName;
   try {
-    await instanceApi.setModEnabled(task.instanceName, mod.fileName, !mod.enabled);
+    await instanceApi.setModEnabled(task.instanceName, mod.fileName, enabled);
     if (!scope.isCurrent(task)) return;
-    await loadMods();
+    setModEnabledInList(mods.value, mod.fileName, enabled);
     emit('changed');
   } catch (e) {
     if (!scope.isCurrent(task)) return;
@@ -337,66 +352,76 @@ watch(
         </v-btn>
       </div>
 
-      <v-list v-else lines="two" density="compact" bg-color="transparent">
-        <v-list-item v-for="mod in filteredMods" :key="mod.fileName">
-          <template #prepend>
-            <v-icon size="20" color="on-surface-variant">mdi-puzzle-outline</v-icon>
-          </template>
-          <v-list-item-title class="text-body-medium" :class="{ 'text-on-surface-variant': !mod.enabled }">
-            {{ mod.displayName }}
-          </v-list-item-title>
-          <v-list-item-subtitle class="text-body-small">
-            <template v-if="mod.version">v{{ mod.version }} · </template>
-            {{ formatModSize(mod.size) }} · {{ mod.fileName }}
-          </v-list-item-subtitle>
+      <v-virtual-scroll
+        v-else
+        ref="modListRef"
+        class="mods-scroll py-2"
+        :items="filteredMods"
+        item-key="fileName"
+        :item-height="MOD_ROW_HEIGHT"
+        :height="modsListHeight"
+      >
+        <template #default="{ item: mod }">
+          <v-list-item lines="two" density="compact">
+            <template #prepend>
+              <v-icon size="20" color="on-surface-variant">mdi-puzzle-outline</v-icon>
+            </template>
+            <v-list-item-title class="text-body-medium" :class="{ 'text-on-surface-variant': !mod.enabled }">
+              {{ mod.displayName }}
+            </v-list-item-title>
+            <v-list-item-subtitle class="text-body-small">
+              <template v-if="mod.version">v{{ mod.version }} · </template>
+              {{ formatModSize(mod.size) }} · {{ mod.fileName }}
+            </v-list-item-subtitle>
 
-          <template #append>
-            <div class="d-flex align-center ga-1">
-              <v-chip v-if="updateMap.get(mod.fileName)" size="x-small" color="warning" variant="tonal">
-                {{ updateMap.get(mod.fileName)?.versionNumber }}
-              </v-chip>
-              <v-btn
-                v-if="updateMap.get(mod.fileName)"
-                icon
-                size="small"
-                variant="text"
-                color="primary"
-                :loading="updatingFile === mod.fileName"
-                :disabled="updatingAll"
-                :aria-label="t('mods.updateAria', { name: mod.displayName })"
-                @click="updateMod(mod)"
-              >
-                <v-icon size="18">mdi-update</v-icon>
-              </v-btn>
-              <v-switch
-                :model-value="mod.enabled"
-                :loading="busyFile === mod.fileName"
-                :disabled="busyFile === mod.fileName"
-                :aria-label="
-                  mod.enabled
-                    ? t('mods.disableAria', { name: mod.displayName })
-                    : t('mods.enableAria', { name: mod.displayName })
-                "
-                hide-details
-                inset
-                density="compact"
-                color="primary"
-                @update:model-value="toggleMod(mod)"
-              />
-              <v-btn
-                icon
-                size="small"
-                variant="text"
-                :aria-label="t('mods.deleteAria', { name: mod.displayName })"
-                :disabled="busyFile === mod.fileName"
-                @click="askDeleteMod(mod)"
-              >
-                <v-icon size="18">mdi-delete-outline</v-icon>
-              </v-btn>
-            </div>
-          </template>
-        </v-list-item>
-      </v-list>
+            <template #append>
+              <div class="d-flex align-center ga-1">
+                <v-chip v-if="updateMap.get(mod.fileName)" size="x-small" color="warning" variant="tonal">
+                  {{ updateMap.get(mod.fileName)?.versionNumber }}
+                </v-chip>
+                <v-btn
+                  v-if="updateMap.get(mod.fileName)"
+                  icon
+                  size="small"
+                  variant="text"
+                  color="primary"
+                  :loading="updatingFile === mod.fileName"
+                  :disabled="updatingAll"
+                  :aria-label="t('mods.updateAria', { name: mod.displayName })"
+                  @click="updateMod(mod)"
+                >
+                  <v-icon size="18">mdi-update</v-icon>
+                </v-btn>
+                <v-switch
+                  :model-value="mod.enabled"
+                  :loading="busyFile === mod.fileName"
+                  :disabled="busyFile === mod.fileName"
+                  :aria-label="
+                    mod.enabled
+                      ? t('mods.disableAria', { name: mod.displayName })
+                      : t('mods.enableAria', { name: mod.displayName })
+                  "
+                  hide-details
+                  inset
+                  density="compact"
+                  color="primary"
+                  @update:model-value="toggleMod(mod)"
+                />
+                <v-btn
+                  icon
+                  size="small"
+                  variant="text"
+                  :aria-label="t('mods.deleteAria', { name: mod.displayName })"
+                  :disabled="busyFile === mod.fileName"
+                  @click="askDeleteMod(mod)"
+                >
+                  <v-icon size="18">mdi-delete-outline</v-icon>
+                </v-btn>
+              </div>
+            </template>
+          </v-list-item>
+        </template>
+      </v-virtual-scroll>
 
       <v-divider v-if="mods.length > 0" />
       <div v-if="mods.length > 0" class="text-body-small text-on-surface-variant pa-3">
