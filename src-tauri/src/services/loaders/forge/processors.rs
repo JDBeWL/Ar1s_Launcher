@@ -1,7 +1,9 @@
-//! processor 执行器：解析参数、挑 Java、跑进程
+//! processor 执行器：解析参数、选择 Java、跑进程
 
+#[cfg(windows)]
+use super::CREATE_NO_WINDOW;
+use super::PROCESSOR_TIMEOUT;
 use super::*;
-use super::{CREATE_NO_WINDOW, PROCESSOR_TIMEOUT};
 use crate::errors::LauncherError;
 use crate::services::launcher::java::JavaCandidate;
 use crate::utils::minecraft::maven_name_to_path;

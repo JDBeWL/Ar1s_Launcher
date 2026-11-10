@@ -1,6 +1,8 @@
 //! 跑官方 installer jar
 
-use super::{CREATE_NO_WINDOW, INSTALLER_TIMEOUT};
+#[cfg(windows)]
+use super::CREATE_NO_WINDOW;
+use super::INSTALLER_TIMEOUT;
 use crate::errors::LauncherError;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};

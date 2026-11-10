@@ -284,10 +284,35 @@ pub(crate) fn path_inside(candidate: &str, dir: &Path) -> bool {
 }
 
 fn normalized_path(path: &Path) -> String {
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let path = canonicalize_prefix(path);
     let raw = path.to_string_lossy();
     let stripped = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
     stripped.replace('\\', "/").to_lowercase()
+}
+
+/// 尽量 canonicalize，取不到真实路径就把最近的已存在祖先展开、余下部分原样拼回去
+fn canonicalize_prefix(path: &Path) -> PathBuf {
+    if let Ok(real) = path.canonicalize() {
+        return real;
+    }
+
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut cursor = path;
+    while let Some(parent) = cursor.parent() {
+        if let Some(name) = cursor.file_name() {
+            missing.push(name);
+        }
+        if let Ok(real) = parent.canonicalize() {
+            let mut rebuilt = real;
+            for part in missing.iter().rev() {
+                rebuilt.push(part);
+            }
+            return rebuilt;
+        }
+        cursor = parent;
+    }
+
+    path.to_path_buf()
 }
 
 const CATALOG_TTL: Duration = Duration::from_secs(6 * 3600);
@@ -931,5 +956,18 @@ mod tests {
             tmp.path().join("runtime/java/other").to_str().unwrap(),
             &dir
         ));
+    }
+
+    /// 不存在的路径也要和父目录走同一套归一化，否则 8.3 短名机器上会判成「不在目录里」
+    #[test]
+    fn test_normalized_path_keeps_missing_tail_under_its_parent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("runtime/java/temurin-21");
+        fs::create_dir_all(dir.join("bin")).unwrap();
+
+        let missing = dir.join("child").join(JAVA_BIN);
+        let parent = normalized_path(&dir);
+
+        assert!(normalized_path(&missing).starts_with(&format!("{parent}/")));
     }
 }
