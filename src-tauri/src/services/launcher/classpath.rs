@@ -154,10 +154,11 @@ pub fn build_classpath(
             "log-error",
             format!("主游戏JAR文件不存在: {}", main_game_jar_path.display()),
         );
-        return Err(LauncherError::Custom(format!(
-            "主游戏JAR文件不存在: {}",
-            main_game_jar_path.display()
-        )));
+        return Err(LauncherError::localized(
+            "main_jar_missing",
+            format!("主游戏JAR文件不存在: {}", main_game_jar_path.display()),
+            vec![main_game_jar_path.display().to_string()],
+        ));
     }
 
     classpath.push(main_game_jar_path);

@@ -4,7 +4,7 @@
 
 一个基于Tauri框架构建的现代化Minecraft启动器，使用Vuetify提供Material Design 3风格的用户界面。
 
-![Version](https://img.shields.io/badge/version-0.9.9-blue)
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2.12-orange)
 ![Vue](https://img.shields.io/badge/Vue-3.5-green)
 ![Rust](https://img.shields.io/badge/Rust-1.95+-red)
@@ -55,7 +55,7 @@
 ### 前端技术
 
 - **Vue 3.5**: 现代化的前端框架，使用 Composition API
-- **Vuetify 4.2**: Material Design 3 组件库
+- **Vuetify 4.3**: Material Design 3 组件库
 - **TypeScript 6.0**: 类型安全的JavaScript超集
 - **Pinia 4**: Vue 状态管理库
 - **Vue Router 5**: 前端路由管理
@@ -124,6 +124,7 @@ pnpm run tauri build
 
 ```bash
 pnpm run type-check
+pnpm lint             # oxlint：类型之外的错误写法与 Vue 模板问题
 pnpm test
 pnpm version:check    # 校验三处版本号与 README badge 是否一致
 cargo test --manifest-path src-tauri/Cargo.toml
@@ -188,15 +189,15 @@ Ar1s_Launcher/
 │   │   │   ├── launcher/         # 启动器服务模块
 │   │   │   ├── loaders/          # 加载器安装模块
 │   │   │   │   ├── fabric.rs     # Fabric安装
-│   │   │   │   ├── forge.rs      # Forge安装
+│   │   │   │   ├── forge/        # Forge安装（镜像/版本/下载/installer/手工安装/processor）
 │   │   │   │   ├── quilt.rs      # Quilt安装
 │   │   │   │   └── neoforge.rs   # NeoForge安装
 │   │   │   ├── config.rs         # 配置服务
-│   │   │   ├── instance.rs       # 实例服务
+│   │   │   ├── instance/         # 实例服务（创建/扫描/模组/生命周期/维护）
 │   │   │   ├── java.rs           # Java检测服务
 │   │   │   ├── memory.rs         # 内存管理服务
 │   │   │   ├── modrinth.rs       # Modrinth API服务
-│   │   │   └── modpack_installer.rs     # 整合包安装服务
+│   │   │   └── modpack_installer/       # 整合包安装（计划/下载/安装/本地包/进度）
 │   │   ├── utils/                # 工具函数
 │   │   │   ├── file_utils.rs     # 文件操作工具
 │   │   │   └── logger.rs         # 日志工具

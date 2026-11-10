@@ -173,9 +173,19 @@ impl ModInstaller {
             Some(id) => files
                 .iter()
                 .find(|file| file.id.to_string() == id)
-                .ok_or_else(|| LauncherError::Custom("未找到指定的模组文件".to_string()))?,
+                .ok_or_else(|| {
+                    LauncherError::localized(
+                        "mod_file_not_found",
+                        "未找到指定的模组文件",
+                        Vec::new(),
+                    )
+                })?,
             None => pick_loader_match(&files, &context.loader)?.ok_or_else(|| {
-                LauncherError::Custom("该模组没有适配此实例版本与加载器的文件".to_string())
+                LauncherError::localized(
+                    "mod_no_compatible_file",
+                    "该模组没有适配此实例版本与加载器的文件",
+                    Vec::new(),
+                )
             })?,
         };
 
@@ -238,7 +248,11 @@ impl ModInstaller {
                 .first()
                 .map(|version| version.id.clone())
                 .ok_or_else(|| {
-                    LauncherError::Custom("该模组没有适配此实例版本与加载器的文件".to_string())
+                    LauncherError::localized(
+                        "mod_no_compatible_file",
+                        "该模组没有适配此实例版本与加载器的文件",
+                        Vec::new(),
+                    )
                 })?,
         };
 
@@ -546,7 +560,13 @@ async fn resolve_context(instance_name: &str) -> Result<ModContext, LauncherErro
     let game_version = info
         .game_version
         .filter(|version| !version.is_empty())
-        .ok_or_else(|| LauncherError::Custom("无法确定实例的 Minecraft 版本".to_string()))?;
+        .ok_or_else(|| {
+            LauncherError::localized(
+                "instance_version_unknown",
+                "无法确定实例的 Minecraft 版本",
+                Vec::new(),
+            )
+        })?;
 
     let config = config::load_config()?;
     let game_dir = PathBuf::from(&config.game_dir);

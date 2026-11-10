@@ -15,6 +15,7 @@ import screenshots from './screenshots';
 import settings from './settings';
 import addInstance from './addInstance';
 import launch from './launch';
+import backendErrors from './backendErrors';
 
 // Vuetify looks its built-in strings up under the `$vuetify.` prefix, so its catalog
 // must be nested there; flattening it to the root leaves pagination, empty selects and
@@ -35,4 +36,5 @@ export default mergeMessages(
   settings,
   addInstance,
   launch,
+  backendErrors,
 );

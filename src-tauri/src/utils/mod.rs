@@ -2,6 +2,7 @@
 //!
 //! 无状态纯函数，不属于任何服务、被多处复用
 
+pub mod disk_space;
 pub mod file_lock;
 pub mod file_utils;
 pub mod library;

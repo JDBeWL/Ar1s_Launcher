@@ -498,6 +498,7 @@
           <v-btn
             v-if="!installing"
             color="primary"
+            class="install-btn"
             :disabled="!canInstall"
             :loading="checkingInstanceName"
             @click="install"

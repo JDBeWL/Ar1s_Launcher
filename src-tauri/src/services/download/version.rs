@@ -279,7 +279,13 @@ async fn fetch_version_json_from(
         .versions
         .iter()
         .find(|v| v.id == version_id)
-        .ok_or_else(|| LauncherError::Custom(format!("版本 {} 不存在", version_id)))?;
+        .ok_or_else(|| {
+            LauncherError::localized(
+                "version_not_found",
+                format!("版本 {} 不存在", version_id),
+                vec![version_id.to_string()],
+            )
+        })?;
 
     let version_json_url = download_sources::version_json_url(&version.url, source);
     let text = client

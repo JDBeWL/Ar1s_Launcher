@@ -3,63 +3,38 @@
  * 统一错误形状与超时：后端拒绝的 { code, message } 转成 LauncherCommandError，卡死的命令不会让界面无限等待
  */
 import { invoke } from '@tauri-apps/api/core';
-import { translate } from '../i18n';
+import { hasTranslation, rawTranslation, translate, translateList } from '../i18n';
 import { logWarn } from '../utils/logger';
 
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
-
-/** 下载、安装、扫描磁盘等天然可能超过两分钟的命令不设超时 */
-const UNBOUNDED_TIMEOUT_COMMANDS = new Set([
-  'download_version',
-  'create_instance',
-  'install_modrinth_modpack',
-  'install_local_modpack',
-  'install_modrinth_mod',
-  'install_curseforge_modpack',
-  'install_curseforge_mod',
-  'preview_local_modpack',
-  'export_modpack',
-  'validate_version_files',
-  'get_game_dir_info',
-  'get_instances',
-  'get_instance_mods',
-  'get_instance_saves',
-  'get_save_backups',
-  'backup_save',
-  'restore_save_backup',
-  'delete_save_backup',
-  'import_saves',
-  'get_resource_packs',
-  'import_resource_packs',
-  'install_modrinth_resource_pack',
-  'get_shader_packs',
-  'import_shader_packs',
-  'install_modrinth_shader_pack',
-  'find_java_installations_command',
-  'refresh_java_installations',
-  'check_java_compatibility',
-  'download_java_runtime',
-  'export_diagnostic_bundle',
-  'launch_instance',
-  'complete_microsoft_login',
-  'complete_microsoft_auth_code_login',
-]);
 
 export interface InvokeCommandOptions {
   /** 0 表示本次调用不设超时 */
   timeoutMs?: number;
 }
 
+/**
+ * 长任务的显式声明
+ *
+ * 下载、安装、解压、扫描磁盘、等浏览器回调都可能远超默认超时，这些调用在 API 层
+ * 用 `invokeLong` / `dedupedInvokeLong` 明确写出来，而不是维护一份「哪些命令例外」的
+ * 全局名单：名单漏加一个命令，用户就会撞上莫名其妙的超时，而且从调用点完全看不出来
+ */
+export const NO_TIMEOUT: InvokeCommandOptions = { timeoutMs: 0 };
+
 export class LauncherCommandError extends Error {
   readonly command: string;
   readonly code: string;
+  /** 后端错误码带的位置参数，与错误码文案里的 {0}、{1} 对应 */
+  readonly params: string[];
   readonly raw: unknown;
 
-  constructor(command: string, code: string, message: string, raw: unknown) {
+  constructor(command: string, code: string, message: string, raw: unknown, params: string[] = []) {
     super(message);
     this.name = 'LauncherCommandError';
     this.command = command;
     this.code = code;
+    this.params = params;
     this.raw = raw;
   }
 
@@ -68,11 +43,44 @@ export class LauncherCommandError extends Error {
   }
 }
 
+const BACKEND_ERROR_KEY_PREFIX = 'errors.backend.';
+
 function extractCode(error: unknown): string | null {
   if (!error || typeof error !== 'object' || !('code' in error)) return null;
   const code = (error as { code: unknown }).code;
   if (code == null) return null;
   return typeof code === 'string' ? code : String(code);
+}
+
+function extractParams(error: unknown): string[] {
+  if (!error || typeof error !== 'object' || !('params' in error)) return [];
+  const params = (error as { params: unknown }).params;
+  if (!Array.isArray(params)) return [];
+  return params.map((value) => (value == null ? '' : String(value)));
+}
+
+/**
+ * 后端错误码 → 当前语言的文案
+ *
+ * 有专用词条且参数够用就用词条；`custom` 没有细分码，用本地化外壳包住后端原文；
+ * 其余情况返回 null，由调用方回退到原文，避免把 `{0}` 之类的占位符露给用户
+ */
+function localizeBackendError(code: string | null, params: string[], rawMessage: string): string | null {
+  if (!code) return null;
+  if (code === 'custom') {
+    return translateList(`${BACKEND_ERROR_KEY_PREFIX}custom`, [rawMessage]);
+  }
+
+  const key = `${BACKEND_ERROR_KEY_PREFIX}${code}`;
+  if (!hasTranslation(key)) return null;
+
+  // 新旧版本错配时参数可能不够，此时宁可显示后端原文也不显示半截模板
+  const template = rawTranslation(key);
+  const placeholderIndexes = template ? [...template.matchAll(/\{(\d+)\}/g)].map((m) => Number(m[1])) : [];
+  const required = placeholderIndexes.length > 0 ? Math.max(...placeholderIndexes) + 1 : 0;
+  if (params.length < required) return null;
+
+  return translateList(key, params);
 }
 
 function extractMessage(error: unknown): string {
@@ -94,12 +102,24 @@ function extractMessage(error: unknown): string {
 
 export function normalizeCommandError(command: string, error: unknown): LauncherCommandError {
   if (error instanceof LauncherCommandError) return error;
-  return new LauncherCommandError(command, extractCode(error) ?? 'ipc', extractMessage(error), error);
+
+  const code = extractCode(error);
+  const params = extractParams(error);
+  const rawMessage = extractMessage(error);
+
+  return new LauncherCommandError(
+    command,
+    code ?? 'ipc',
+    localizeBackendError(code, params, rawMessage) ?? rawMessage,
+    error,
+    params,
+  );
 }
 
-export function commandTimeoutMs(command: string, override?: number): number {
-  if (override !== undefined) return Math.max(0, override);
-  return UNBOUNDED_TIMEOUT_COMMANDS.has(command) ? 0 : DEFAULT_COMMAND_TIMEOUT_MS;
+/** 调用方没声明就用默认值；0 与负数都按「不设超时」处理 */
+export function commandTimeoutMs(override?: number): number {
+  if (override === undefined) return DEFAULT_COMMAND_TIMEOUT_MS;
+  return Math.max(0, override);
 }
 
 export async function invokeCommand<T>(
@@ -107,7 +127,7 @@ export async function invokeCommand<T>(
   args?: Record<string, unknown>,
   options: InvokeCommandOptions = {},
 ): Promise<T> {
-  const timeoutMs = commandTimeoutMs(command, options.timeoutMs);
+  const timeoutMs = commandTimeoutMs(options.timeoutMs);
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   try {

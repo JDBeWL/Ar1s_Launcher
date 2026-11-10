@@ -176,10 +176,14 @@ pub async fn launch_minecraft(
     let run_lock = crate::services::instance::acquire_run_shared_lock(&game_dir, &options.version)
         .await
         .map_err(|e| match e {
-            LauncherError::Busy(_) => LauncherError::Custom(format!(
-                "实例 '{}' 正在被删除或重命名，请稍后再启动",
-                options.version
-            )),
+            LauncherError::Busy(_) => LauncherError::localized(
+                "instance_locked",
+                format!(
+                    "实例 '{}' 正在被删除或重命名，请稍后再启动",
+                    options.version
+                ),
+                vec![options.version.clone()],
+            ),
             other => other,
         })?;
 

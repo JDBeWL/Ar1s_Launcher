@@ -153,6 +153,12 @@ export default defineConfig(async () => ({
     environment: 'node',
     include: ['src/**/*.{test,spec}.{ts,tsx}', 'scripts/**/*.test.mjs'],
     setupFiles: ['./src/test/setup.ts'],
+    // Vuetify 的组件入口自带 .css 导入，交给 Vite 处理而不是让 Node 直接加载
+    server: {
+      deps: {
+        inline: ['vuetify'],
+      },
+    },
   },
 
   clearScreen: false,

@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "vitest", "vue"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn"
+  },
+  "env": {
+    "browser": true,
+    "es2024": true
+  },
+  "ignorePatterns": ["dist/**", "src-tauri/**", "logs/**", "public/**", "src-tauri/target/**"],
+  "rules": {
+    "no-console": "off",
+    "import/no-unassigned-import": "off",
+    "eslint/no-underscore-dangle": "off",
+    "eslint/no-await-in-loop": "off",
+    "oxc/no-map-spread": "off",
+    "unicorn/no-array-sort": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "vitest/valid-expect": "off",
+    "vitest/require-mock-type-parameters": "off"
+  }
+}

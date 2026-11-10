@@ -198,7 +198,7 @@ function parseTsInvocations(sources: Record<string, string>): TsInvocation[] {
   for (const [file, source] of Object.entries(sources)) {
     if (/\.(test|spec)\.ts$/.test(file)) continue;
 
-    for (const match of source.matchAll(/\b(invokeCommand|dedupedInvoke|invoke)\b/g)) {
+    for (const match of source.matchAll(/\b(invokeCommand|dedupedInvokeLong|dedupedInvoke|invokeLong|invoke)\b/g)) {
       const start = match.index ?? 0;
       if (source.charAt(start - 1) === '.') continue;
 

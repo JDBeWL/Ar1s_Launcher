@@ -8,7 +8,8 @@ const { invokeMock, warnMock } = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 vi.mock('../utils/logger', () => ({ logWarn: warnMock }));
 
-import { DEFAULT_COMMAND_TIMEOUT_MS, LauncherCommandError, invokeCommand } from './invoke';
+import { DEFAULT_COMMAND_TIMEOUT_MS, LauncherCommandError, NO_TIMEOUT, invokeCommand } from './invoke';
+import { DEFAULT_LOCALE, setLocale } from '../i18n';
 
 describe('invokeCommand', () => {
   beforeEach(() => {
@@ -89,7 +90,7 @@ describe('invokeCommand', () => {
     await assertion;
   });
 
-  it('下载等长任务不设默认超时', async () => {
+  it('长任务在调用点声明不设超时后才不会被打断', async () => {
     vi.useFakeTimers();
     let resolveRequest: ((value: string) => void) | undefined;
     invokeMock.mockReturnValue(
@@ -99,7 +100,7 @@ describe('invokeCommand', () => {
     );
 
     let settled = false;
-    const promise = invokeCommand('download_version').finally(() => {
+    const promise = invokeCommand('download_version', undefined, NO_TIMEOUT).finally(() => {
       settled = true;
     });
 
@@ -108,6 +109,19 @@ describe('invokeCommand', () => {
 
     resolveRequest?.('done');
     await expect(promise).resolves.toBe('done');
+  });
+
+  it('没有声明不超时的长任务仍受默认超时保护', async () => {
+    // 这条防止「命令名白名单」被悄悄加回来：超时策略只认调用点，不认命令名
+    vi.useFakeTimers();
+    invokeMock.mockReturnValue(new Promise(() => {}));
+
+    const assertion = expect(invokeCommand('download_version')).rejects.toMatchObject({
+      code: 'timeout',
+    });
+
+    await vi.advanceTimersByTimeAsync(DEFAULT_COMMAND_TIMEOUT_MS);
+    await assertion;
   });
 
   it('可显式关闭单次调用的超时', async () => {
@@ -129,5 +143,82 @@ describe('invokeCommand', () => {
 
     resolveRequest?.('done');
     await expect(promise).resolves.toBe('done');
+  });
+});
+
+describe('后端错误码本地化', () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    vi.useRealTimers();
+    setLocale(DEFAULT_LOCALE);
+  });
+
+  it('英文界面把错误码翻成英文并填充位置参数', async () => {
+    setLocale('en-US');
+    invokeMock.mockRejectedValue({
+      code: 'disk_insufficient',
+      message: '磁盘空间不足：需要约 2.0 GB，当前可用 1.0 GB（D:/game）',
+      params: ['2.0 GB', '1.0 GB', 'D:/game'],
+    });
+
+    const error = (await invokeCommand('download_version').catch((value: unknown) => value)) as LauncherCommandError;
+
+    expect(error.code).toBe('disk_insufficient');
+    expect(error.message).toBe('Not enough disk space: about 2.0 GB required, 1.0 GB available (D:/game)');
+    expect(error.params).toEqual(['2.0 GB', '1.0 GB', 'D:/game']);
+  });
+
+  it('中文界面用中文文案', async () => {
+    invokeMock.mockRejectedValue({
+      code: 'java_not_found',
+      message: '未在配置中找到有效的Java路径，且系统PATH中也未找到Java。',
+      params: [],
+    });
+
+    const error = (await invokeCommand('launch_instance').catch((value: unknown) => value)) as LauncherCommandError;
+
+    expect(error.message).toContain('没有找到可用的 Java');
+  });
+
+  it('粗粒度 io 错误用本地化外壳包住底层原因', async () => {
+    invokeMock.mockRejectedValue({
+      code: 'io',
+      message: 'IO 错误: 拒绝访问 (os error 5)',
+      params: ['拒绝访问 (os error 5)'],
+    });
+
+    const error = (await invokeCommand('get_instances').catch((value: unknown) => value)) as LauncherCommandError;
+
+    expect(error.message).toBe('文件操作失败：拒绝访问 (os error 5)');
+  });
+
+  it('没有细分码的 custom 错误用本地化外壳保留原文', () => {
+    setLocale('en-US');
+    invokeMock.mockRejectedValue({ code: 'custom', message: '实例目录里缺少 client.jar' });
+
+    return expect(invokeCommand('create_instance')).rejects.toMatchObject({
+      message: 'Operation failed: 实例目录里缺少 client.jar',
+    });
+  });
+
+  it('参数不足以填满模板时回退到后端原文', async () => {
+    // 旧后端只发 code 和 message，没带 params：不能把 {0} 露给用户
+    invokeMock.mockRejectedValue({ code: 'disk_insufficient', message: '磁盘空间不足' });
+
+    const error = (await invokeCommand('download_version').catch((value: unknown) => value)) as LauncherCommandError;
+
+    expect(error.message).toBe('磁盘空间不足');
+  });
+
+  it('未知错误码回退到原文，不显示原始 key', async () => {
+    invokeMock.mockRejectedValue({
+      code: 'not_registered_yet',
+      message: '后端新加的错误',
+      params: [],
+    });
+
+    const error = (await invokeCommand('something_new').catch((value: unknown) => value)) as LauncherCommandError;
+
+    expect(error.message).toBe('后端新加的错误');
   });
 });

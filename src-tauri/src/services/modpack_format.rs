@@ -156,26 +156,41 @@ pub fn is_client_file(file: &ModrinthIndexFile) -> bool {
 pub fn read_index_from_archive(path: &Path) -> Result<ModrinthIndex, LauncherError> {
     let file = fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| {
-        LauncherError::Custom(format!("无法读取整合包（可能不是 zip 格式）: {}", e))
+        LauncherError::localized(
+            "modpack_unreadable",
+            format!("无法读取整合包（可能不是 zip 格式）: {}", e),
+            vec![e.to_string()],
+        )
     })?;
 
     let entry = archive.by_name(INDEX_FILE).map_err(|_| {
-        LauncherError::Custom(format!("整合包缺少 {}，可能不是 Modrinth 格式", INDEX_FILE))
+        LauncherError::localized(
+            "modpack_missing_index",
+            format!("整合包缺少 {}，可能不是 Modrinth 格式", INDEX_FILE),
+            vec![INDEX_FILE.to_string()],
+        )
     })?;
 
     if entry.size() > MAX_INDEX_BYTES {
-        return Err(LauncherError::Custom(format!(
-            "{} 超过 {} 字节上限，已拒绝",
-            INDEX_FILE, MAX_INDEX_BYTES
-        )));
+        return Err(LauncherError::localized(
+            "modpack_index_too_large",
+            format!("{} 超过 {} 字节上限，已拒绝", INDEX_FILE, MAX_INDEX_BYTES),
+            vec![INDEX_FILE.to_string(), MAX_INDEX_BYTES.to_string()],
+        ));
     }
 
     let mut text = String::new();
     // 上面的上限依赖 zip 头声明的 size，可以造假；按实际解压出的字节流再限一次，
     // 恶意包把索引炸到几百 MB 时最多读 MAX_INDEX_BYTES 就截断
     entry.take(MAX_INDEX_BYTES).read_to_string(&mut text)?;
-    let index: ModrinthIndex = serde_json::from_str(text.trim_start_matches('\u{feff}'))
-        .map_err(|e| LauncherError::Custom(format!("解析 {} 失败: {}", INDEX_FILE, e)))?;
+    let index: ModrinthIndex =
+        serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| {
+            LauncherError::localized(
+                "modpack_index_invalid",
+                format!("解析 {} 失败: {}", INDEX_FILE, e),
+                vec![INDEX_FILE.to_string(), e.to_string()],
+            )
+        })?;
 
     validate_index(&index)?;
     Ok(index)
@@ -184,8 +199,14 @@ pub fn read_index_from_archive(path: &Path) -> Result<ModrinthIndex, LauncherErr
 /// 解压后的 index，路径校验与结构校验和压缩包里读到的一致
 pub fn read_index_file(path: &Path) -> Result<ModrinthIndex, LauncherError> {
     let text = fs::read_to_string(path)?;
-    let index: ModrinthIndex = serde_json::from_str(text.trim_start_matches('\u{feff}'))
-        .map_err(|e| LauncherError::Custom(format!("解析 {} 失败: {}", INDEX_FILE, e)))?;
+    let index: ModrinthIndex =
+        serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| {
+            LauncherError::localized(
+                "modpack_index_invalid",
+                format!("解析 {} 失败: {}", INDEX_FILE, e),
+                vec![INDEX_FILE.to_string(), e.to_string()],
+            )
+        })?;
     validate_index(&index)?;
     Ok(index)
 }

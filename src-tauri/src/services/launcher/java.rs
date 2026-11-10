@@ -59,19 +59,25 @@ pub fn resolve_java_path(config: &GameConfig) -> Result<String, LauncherError> {
             return Ok(resolved.to_string_lossy().into_owned());
         }
         if PathBuf::from(config_path).is_relative() {
-            return Err(LauncherError::Custom(format!(
-                "Java 相对路径 '{}' 解析后不存在: {}",
-                config_path,
-                resolved.display()
-            )));
+            return Err(LauncherError::localized(
+                "java_path_invalid",
+                format!(
+                    "Java 相对路径 '{}' 解析后不存在: {}",
+                    config_path,
+                    resolved.display()
+                ),
+                vec![config_path.clone(), resolved.display().to_string()],
+            ));
         }
     }
 
     if probe_java("java").is_some() {
         Ok("java".to_string())
     } else {
-        Err(LauncherError::Custom(
-            "未在配置中找到有效的Java路径，且系统PATH中也未找到Java。".to_string(),
+        Err(LauncherError::localized(
+            "java_not_found",
+            "未在配置中找到有效的Java路径，且系统PATH中也未找到Java。",
+            Vec::new(),
         ))
     }
 }

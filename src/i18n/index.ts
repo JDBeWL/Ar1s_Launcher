@@ -112,3 +112,27 @@ export function translate(key: string, named?: Record<string, unknown>, plural?:
   }
   return named ? composer.t(key, named) : composer.t(key);
 }
+
+interface ListComposerLike {
+  t: (key: string, list: readonly unknown[]) => string;
+  te: (key: string) => boolean;
+}
+
+/** 按位置参数取翻译（`{0}`、`{1}`），用于后端错误码带的参数组 */
+export function translateList(key: string, params: readonly (string | number)[]): string {
+  const composer = i18n.global as unknown as ListComposerLike;
+  return composer.t(key, params);
+}
+
+/** 词条是否存在；不存在时要回退到后端原文而不是显示原始 key */
+export function hasTranslation(key: string): boolean {
+  const composer = i18n.global as unknown as ListComposerLike;
+  return composer.te(key);
+}
+
+/** 词条原文（不做插值），用于判断它需要几个位置参数 */
+export function rawTranslation(key: string): string | null {
+  const composer = i18n.global as unknown as { tm: (key: string) => unknown };
+  const message = composer.tm(key);
+  return typeof message === 'string' ? message : null;
+}

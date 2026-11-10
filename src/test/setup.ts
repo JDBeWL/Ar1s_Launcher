@@ -56,3 +56,18 @@ function createMemoryStorage(): Storage {
     },
   } as Storage;
 }
+
+// 组件测试跑在 happy-dom 下：Vuetify 的布局与虚拟滚动依赖 ResizeObserver
+if (typeof window !== 'undefined' && !('ResizeObserver' in window)) {
+  class ResizeObserverStub {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+
+  Object.defineProperty(window, 'ResizeObserver', {
+    value: ResizeObserverStub,
+    configurable: true,
+    writable: true,
+  });
+}

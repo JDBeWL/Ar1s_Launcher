@@ -15,6 +15,7 @@ import screenshots from './screenshots';
 import settings from './settings';
 import addInstance from './addInstance';
 import launch from './launch';
+import backendErrors from './backendErrors';
 
 // Vuetify 组件查文案时用的是 `$vuetify.xxx` 前缀，所以它的语言包必须挂在 `$vuetify` 下，
 // 不能平铺到根上，否则分页、选择框空状态、日期面板会退回英文 key
@@ -34,4 +35,5 @@ export default mergeMessages(
   settings,
   addInstance,
   launch,
+  backendErrors,
 );

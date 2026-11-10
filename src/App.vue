@@ -25,7 +25,11 @@ const windowControls = {
   minimize: () => appWindow.minimize(),
   toggleMaximize: async () => {
     const maximized = await appWindow.isMaximized();
-    maximized ? appWindow.unmaximize() : appWindow.maximize();
+    if (maximized) {
+      await appWindow.unmaximize();
+    } else {
+      await appWindow.maximize();
+    }
   },
   close: () => appWindow.close(),
 };

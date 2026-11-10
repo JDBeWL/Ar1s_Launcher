@@ -8,8 +8,15 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use sysinfo::{MemoryRefreshKind, System};
 
-static MEMORY_SYSTEM: std::sync::LazyLock<Mutex<System>> =
-    std::sync::LazyLock::new(|| Mutex::new(System::new()));
+/// sysinfo 0.40 起构造 System 会失败（取不到系统信息时），失败就退化成「内存未知」
+static MEMORY_SYSTEM: std::sync::LazyLock<Option<Mutex<System>>> =
+    std::sync::LazyLock::new(|| match System::new() {
+        Ok(system) => Some(Mutex::new(system)),
+        Err(error) => {
+            log::warn!("初始化系统信息失败，内存统计将显示为 0: {}", error);
+            None
+        }
+    });
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryStats {
@@ -73,7 +80,16 @@ impl AutoMemoryPlan {
 }
 
 pub fn get_system_memory() -> MemoryStats {
-    let mut system = MEMORY_SYSTEM
+    let Some(system) = MEMORY_SYSTEM.as_ref() else {
+        return MemoryStats {
+            total_memory_mb: 0,
+            used_memory_mb: 0,
+            available_memory_mb: 0,
+            memory_usage_percent: 0.0,
+        };
+    };
+
+    let mut system = system
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
@@ -81,7 +97,11 @@ pub fn get_system_memory() -> MemoryStats {
     let total_memory_mb = system.total_memory() / 1024 / 1024;
     let used_memory_mb = system.used_memory() / 1024 / 1024;
     let available_memory_mb = system.available_memory() / 1024 / 1024;
-    let memory_usage_percent = (used_memory_mb as f64 / total_memory_mb as f64) * 100.0;
+    let memory_usage_percent = if total_memory_mb == 0 {
+        0.0
+    } else {
+        (used_memory_mb as f64 / total_memory_mb as f64) * 100.0
+    };
 
     MemoryStats {
         total_memory_mb,

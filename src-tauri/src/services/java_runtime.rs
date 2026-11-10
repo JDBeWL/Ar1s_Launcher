@@ -578,6 +578,10 @@ async fn run_download(
 ) -> Result<(), LauncherError> {
     let downloads = downloads_dir();
     fs::create_dir_all(&downloads)?;
+
+    // 压缩包落地 + 解压是同一块盘，解压后通常是压缩包的 2.5 倍左右，按 3 倍预检
+    crate::utils::disk_space::ensure_free_space(&downloads, package.size.saturating_mul(3))?;
+
     let zip_path = downloads.join(format!("temurin-{}.zip", package.feature));
     let job = DownloadJob::new(
         package.mirror_url(),

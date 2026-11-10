@@ -100,6 +100,9 @@ pub async fn download_all_files(
     };
     order_jobs_for_dispatch(&mut filtered_jobs);
 
+    // 预检放在真正的下载之前：一批文件下到一半才发现没空间，比直接拒绝更难收拾
+    crate::utils::disk_space::ensure_space_for_download(&game_dir, &filtered_jobs)?;
+
     // 必须在过滤之后统计，才能反映真实状态
     let (completed_count, resumed_bytes) = {
         let state = download_state.lock().await;
