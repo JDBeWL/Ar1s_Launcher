@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const JAVA_BIN: &str = if cfg!(windows) { "java.exe" } else { "java" };
@@ -627,11 +628,6 @@ fn probe_drives_one_by_one() -> Vec<char> {
         .map(|letter| letter as char)
         .filter(|letter| PathBuf::from(format!("{}:\\", letter)).exists())
         .collect()
-}
-
-#[cfg(not(target_os = "windows"))]
-fn get_windows_drives() -> Vec<char> {
-    Vec::new()
 }
 
 /// 一个目录若直接就是 JDK/JRE 家目录，返回它的 java 可执行文件路径（只判存在，不验证）
